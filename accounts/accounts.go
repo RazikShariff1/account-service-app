@@ -3,6 +3,7 @@ package accounts
 import (
 	"fmt"
 	"net/mail"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -80,6 +81,10 @@ func Create(c *gofr.Context) (any, error) {
 	acc.PasswordHash = string(hash)
 	acc.Password = ""
 
+	now := time.Now().UTC().Format(time.RFC3339)
+	acc.CreatedAt = now
+	acc.UpdatedAt = now
+
 	err = c.SQL.QueryRowContext(c,
 		`INSERT INTO accounts (email, password_hash, name, phone_number, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
@@ -145,6 +150,8 @@ func Update(c *gofr.Context) (any, error) {
 		return nil, err
 	}
 
+	acc.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+
 	if acc.Password != "" {
 		hash, err := bcrypt.GenerateFromPassword([]byte(acc.Password), bcrypt.DefaultCost)
 		if err != nil {
@@ -153,16 +160,16 @@ func Update(c *gofr.Context) (any, error) {
 
 		_, err = c.SQL.ExecContext(c,
 			`UPDATE accounts SET email = $1, password_hash = $2, name = $3, phone_number = $4, status = $5,
-			created_at = $6, updated_at = $7 WHERE id = $8`,
-			acc.Email, string(hash), acc.Name, acc.PhoneNumber, acc.Status, acc.CreatedAt, acc.UpdatedAt, id)
+			updated_at = $6 WHERE id = $7`,
+			acc.Email, string(hash), acc.Name, acc.PhoneNumber, acc.Status, acc.UpdatedAt, id)
 		if err != nil {
 			return nil, err
 		}
 	} else {
 		_, err := c.SQL.ExecContext(c,
 			`UPDATE accounts SET email = $1, name = $2, phone_number = $3, status = $4,
-			created_at = $5, updated_at = $6 WHERE id = $7`,
-			acc.Email, acc.Name, acc.PhoneNumber, acc.Status, acc.CreatedAt, acc.UpdatedAt, id)
+			updated_at = $5 WHERE id = $6`,
+			acc.Email, acc.Name, acc.PhoneNumber, acc.Status, acc.UpdatedAt, id)
 		if err != nil {
 			return nil, err
 		}

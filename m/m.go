@@ -2,6 +2,7 @@ package m
 
 import (
 	"fmt"
+	"time"
 
 	"gofr.dev/pkg/gofr"
 	gofrHTTP "gofr.dev/pkg/gofr/http"
@@ -50,6 +51,10 @@ func Create(c *gofr.Context) (any, error) {
 	if err := validate(&v); err != nil {
 		return nil, err
 	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	v.CreatedAt = now
+	v.UpdatedAt = now
 
 	err := c.SQL.QueryRowContext(c, `INSERT INTO m (name, created_at, updated_at, status) VALUES ($1, $2, $3, $4) RETURNING id`,
 		v.Name, v.CreatedAt, v.UpdatedAt, v.Status).Scan(&v.Id)
@@ -108,8 +113,10 @@ func Update(c *gofr.Context) (any, error) {
 		return nil, err
 	}
 
-	_, err := c.SQL.ExecContext(c, `UPDATE m SET name = $1, created_at = $2, updated_at = $3, status = $4 WHERE id = $5`,
-		v.Name, v.CreatedAt, v.UpdatedAt, v.Status, id)
+	v.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+
+	_, err := c.SQL.ExecContext(c, `UPDATE m SET name = $1, updated_at = $2, status = $3 WHERE id = $4`,
+		v.Name, v.UpdatedAt, v.Status, id)
 	if err != nil {
 		return nil, err
 	}
