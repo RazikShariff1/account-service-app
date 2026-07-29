@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: service
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /.well-known/health
+    envVars:
+      - key: DB_DIALECT
+        value: postgres
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: "5432"
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_SSL_MODE
+        value: require
