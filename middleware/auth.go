@@ -7,7 +7,7 @@ import (
 
 	gofrHTTP "gofr.dev/pkg/gofr/http"
 
-	"account-service/jwt"
+	"main/jwt"
 )
 
 type contextKey string
