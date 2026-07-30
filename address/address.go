@@ -1,12 +1,54 @@
 package address
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/lib/pq"
 
 	"gofr.dev/pkg/gofr"
 	gofrHTTP "gofr.dev/pkg/gofr/http"
 )
+
+// querier is satisfied by both c.SQL and a *sql.Tx, so GetByID can run
+// either directly or as part of a caller-managed transaction.
+type querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// multiQuerier is satisfied by both c.SQL and a *sql.Tx (gofr's Tx only
+// exposes a context-less Query, unlike its QueryRowContext).
+type multiQuerier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// GetByIDs looks up several addresses by id in a single round trip, for
+// callers (e.g. individuals' list enrichment) that would otherwise issue
+// one GetByID call per row.
+func GetByIDs(db multiQuerier, ids []int) ([]AddressResponse, error) {
+	rows, err := db.Query(
+		`SELECT id, road_id, door_no, landmark, city, state, pincode, country, latitude, longitude, img, created_at, updated_at
+		FROM addresses WHERE id = ANY($1)`, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []AddressResponse
+
+	for rows.Next() {
+		v, err := scanAddress(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		result = append(result, v)
+	}
+
+	return result, rows.Err()
+}
 
 // AddressRequest is the payload accepted by the create and update endpoints.
 type AddressRequest struct {
@@ -129,19 +171,22 @@ func GetAll(c *gofr.Context) (any, error) {
 	return result, nil
 }
 
-func Get(c *gofr.Context) (any, error) {
-	id := c.PathParam("id")
-
-	row := c.SQL.QueryRowContext(c,
+// GetByID looks up a single address by id. Returns sql.ErrNoRows, unwrapped,
+// when no row matches, so callers outside this package (e.g. individuals)
+// can distinguish "not found" from other errors. db is typically c.SQL, or
+// a caller-managed *sql.Tx when looking up several rows across packages in
+// one request (Neon's PgBouncer pooler mishandles multiple sequential
+// extended-protocol queries issued outside a transaction).
+func GetByID(ctx context.Context, db querier, id string) (AddressResponse, error) {
+	row := db.QueryRowContext(ctx,
 		`SELECT id, road_id, door_no, landmark, city, state, pincode, country, latitude, longitude, img, created_at, updated_at
 		FROM addresses WHERE id = $1`, id)
 
-	result, err := scanAddress(row)
-	if err != nil {
-		return nil, err
-	}
+	return scanAddress(row)
+}
 
-	return result, nil
+func Get(c *gofr.Context) (any, error) {
+	return GetByID(c, c.SQL, c.PathParam("id"))
 }
 
 func Update(c *gofr.Context) (any, error) {

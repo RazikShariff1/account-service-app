@@ -1,12 +1,54 @@
 package h
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/lib/pq"
 
 	"gofr.dev/pkg/gofr"
 	gofrHTTP "gofr.dev/pkg/gofr/http"
 )
+
+// querier is satisfied by both c.SQL and a *sql.Tx, so GetByID can run
+// either directly or as part of a caller-managed transaction.
+type querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// multiQuerier is satisfied by both c.SQL and a *sql.Tx (gofr's Tx only
+// exposes a context-less Query, unlike its QueryRowContext).
+type multiQuerier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// GetByIDs looks up several h rows by id in a single round trip, for callers
+// (e.g. individuals' list enrichment) that would otherwise issue one
+// GetByID call per row.
+func GetByIDs(db multiQuerier, ids []int) ([]H, error) {
+	rows, err := db.Query(`SELECT id, name, created_at, updated_at, status FROM h WHERE id = ANY($1)`, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []H
+
+	for rows.Next() {
+		var v H
+
+		if err := rows.Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status); err != nil {
+			return nil, err
+		}
+
+		result = append(result, v)
+	}
+
+	return result, rows.Err()
+}
 
 type H struct {
 	Id        int    `json:"id"`
@@ -87,14 +129,33 @@ func GetAll(c *gofr.Context) (any, error) {
 	return result, nil
 }
 
+// GetByID looks up a single h by id. Returns sql.ErrNoRows, unwrapped, when
+// no row matches, so callers outside this package (e.g. individuals) can
+// distinguish "not found" from other errors. db is typically c.SQL, or a
+// caller-managed *sql.Tx when looking up several rows across packages in
+// one request (Neon's PgBouncer pooler mishandles multiple sequential
+// extended-protocol queries issued outside a transaction).
+func GetByID(ctx context.Context, db querier, id string) (*H, error) {
+	var v H
+
+	err := db.QueryRowContext(ctx, `SELECT id, name, created_at, updated_at, status FROM h WHERE id = $1`, id).
+		Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status)
+	if err != nil {
+		return nil, err
+	}
+
+	return &v, nil
+}
+
 func Get(c *gofr.Context) (any, error) {
 	id := c.PathParam("id")
 
-	var v H
-
-	err := c.SQL.QueryRowContext(c, `SELECT id, name, created_at, updated_at, status FROM h WHERE id = $1`, id).
-		Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status)
+	v, err := GetByID(c, c.SQL, id)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
+		}
+
 		return nil, err
 	}
 

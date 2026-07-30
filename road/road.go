@@ -1,12 +1,53 @@
 package road
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/lib/pq"
 
 	"gofr.dev/pkg/gofr"
 	gofrHTTP "gofr.dev/pkg/gofr/http"
 )
+
+// querier is satisfied by both c.SQL and a *sql.Tx, so GetByID can run
+// either directly or as part of a caller-managed transaction.
+type querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// multiQuerier is satisfied by both c.SQL and a *sql.Tx (gofr's Tx only
+// exposes a context-less Query, unlike its QueryRowContext).
+type multiQuerier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// GetByIDs looks up several road rows by id in a single round trip, for
+// callers (e.g. individuals' list enrichment) that would otherwise issue
+// one GetByID call per row.
+func GetByIDs(db multiQuerier, ids []int) ([]Road, error) {
+	rows, err := db.Query(`SELECT id, name, created_at, updated_at, status FROM road WHERE id = ANY($1)`, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []Road
+
+	for rows.Next() {
+		var v Road
+
+		if err := rows.Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status); err != nil {
+			return nil, err
+		}
+
+		result = append(result, v)
+	}
+
+	return result, rows.Err()
+}
 
 type Road struct {
 	Id        int    `json:"id"`
@@ -87,18 +128,26 @@ func GetAll(c *gofr.Context) (any, error) {
 	return result, nil
 }
 
-func Get(c *gofr.Context) (any, error) {
-	id := c.PathParam("id")
-
+// GetByID looks up a single road by id. Returns sql.ErrNoRows, unwrapped,
+// when no row matches, so callers outside this package (e.g. individuals)
+// can distinguish "not found" from other errors. db is typically c.SQL, or
+// a caller-managed *sql.Tx when looking up several rows across packages in
+// one request (Neon's PgBouncer pooler mishandles multiple sequential
+// extended-protocol queries issued outside a transaction).
+func GetByID(ctx context.Context, db querier, id string) (*Road, error) {
 	var v Road
 
-	err := c.SQL.QueryRowContext(c, `SELECT id, name, created_at, updated_at, status FROM road WHERE id = $1`, id).
+	err := db.QueryRowContext(ctx, `SELECT id, name, created_at, updated_at, status FROM road WHERE id = $1`, id).
 		Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status)
 	if err != nil {
 		return nil, err
 	}
 
-	return v, nil
+	return &v, nil
+}
+
+func Get(c *gofr.Context) (any, error) {
+	return GetByID(c, c.SQL, c.PathParam("id"))
 }
 
 func Update(c *gofr.Context) (any, error) {
