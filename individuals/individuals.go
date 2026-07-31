@@ -46,7 +46,7 @@ type IndividualResponse struct {
 	Halqa            Halqa           `json:"halqa"`
 	Masjid           Masjid          `json:"masjid"`
 	Road             Road            `json:"road"`
-	Profession       ProfessionType  `json:"profession"`
+	Profession       Profession      `json:"profession"`
 	Address          Address         `json:"address"`
 }
 
@@ -65,15 +65,15 @@ type Road struct {
 	Name string `json:"name"`
 }
 
-type Profession struct {
+type ProfessionType struct {
 	Id   int    `json:"id"`
 	Name string `json:"name"`
 }
 
-type ProfessionType struct {
-	Id         int        `json:"id"`
-	Name       string     `json:"name"`
-	Profession Profession `json:"profession"`
+type Profession struct {
+	Id             int            `json:"id"`
+	Name           string         `json:"name"`
+	ProfessionType ProfessionType `json:"profession_type"`
 }
 
 type Address struct {
@@ -117,7 +117,7 @@ func scanIndividual(row rowScanner) (*IndividualResponse, error) {
 		&resp.Id, &resp.Name, &phone, &email, &resp.ProfessionStatus, &img, &metaData,
 		&resp.CreatedAt, &resp.UpdatedAt, &lastMetAt,
 		&resp.Halqa.Id, &resp.Masjid.Id, &resp.Road.Id, &resp.Address.Id,
-		&resp.Profession.Id, &resp.Profession.Name, &resp.Profession.Profession.Id, &resp.Profession.Profession.Name,
+		&resp.Profession.ProfessionType.Id, &resp.Profession.ProfessionType.Name, &resp.Profession.Id, &resp.Profession.Name,
 	)
 	if err != nil {
 		return nil, err
