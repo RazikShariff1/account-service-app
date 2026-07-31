@@ -8,10 +8,10 @@ const createProfessionsTable = `CREATE TABLE IF NOT EXISTS professions (
     deleted_at timestamp default null
 );`
 
-const createClassesTable = `CREATE TABLE IF NOT EXISTS classes (
+const createProfessionTypesTable = `CREATE TABLE IF NOT EXISTS profession_types (
     id serial PRIMARY KEY,
     name varchar(100) NOT NULL,
-    h_id int NOT NULL,
+    profession_id int NOT NULL REFERENCES professions(id),
     created_at timestamp default now(),
     updated_at timestamp default now(),
     deleted_at timestamp default null
@@ -36,15 +36,16 @@ const createIndividualsTable = `CREATE TABLE IF NOT EXISTS individuals (
     deleted_at timestamp default null
 );`
 
-// Migrate creates the professions, classes and individuals tables in the
-// secondary database if they don't already exist. professions must run
-// first since individuals.profession_id references it.
+// Migrate creates the professions, profession_types and individuals tables in
+// the secondary database if they don't already exist. professions must run
+// first since profession_types.profession_id and individuals.profession_id
+// both reference it.
 func Migrate() error {
 	if _, err := DB.Exec(createProfessionsTable); err != nil {
 		return err
 	}
 
-	if _, err := DB.Exec(createClassesTable); err != nil {
+	if _, err := DB.Exec(createProfessionTypesTable); err != nil {
 		return err
 	}
 
