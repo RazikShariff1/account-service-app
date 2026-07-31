@@ -24,7 +24,7 @@ type IndividualRequest struct {
 	RId              int             `json:"r_id"`
 	AddressId        int             `json:"address_id"`
 	Email            *string         `json:"email"`
-	ProfessionId     int             `json:"profession_id"`
+	ProfessionTypeId int             `json:"profession_type_id"`
 	ProfessionStatus int             `json:"profession_status"`
 	MetaData         json.RawMessage `json:"meta_data"`
 	Img              *string         `json:"img"`
@@ -46,7 +46,7 @@ type IndividualResponse struct {
 	Halqa            Halqa           `json:"halqa"`
 	Masjid           Masjid          `json:"masjid"`
 	Road             Road            `json:"road"`
-	Profession       Profession      `json:"profession"`
+	Profession       ProfessionType  `json:"profession"`
 	Address          Address         `json:"address"`
 }
 
@@ -70,6 +70,12 @@ type Profession struct {
 	Name string `json:"name"`
 }
 
+type ProfessionType struct {
+	Id         int        `json:"id"`
+	Name       string     `json:"name"`
+	Profession Profession `json:"profession"`
+}
+
 type Address struct {
 	Id        int      `json:"id"`
 	Road      Road     `json:"road"`
@@ -88,9 +94,10 @@ SELECT
     i.id, i.name, i.phone, i.email, i.profession_status, i.img, i.meta_data,
     i.created_at, i.updated_at, i.last_met_at,
     i.h_id, i.m_id, i.r_id, i.address_id,
-    p.id, p.name
+    pt.id, pt.name, p.id, p.name
 FROM individuals i
-JOIN professions p ON p.id = i.profession_id
+JOIN profession_types pt ON pt.id = i.profession_type_id
+JOIN professions p ON p.id = pt.profession_id
 WHERE i.deleted_at IS NULL`
 
 // rowScanner is implemented by both *sql.Row and *sql.Rows.
@@ -110,7 +117,7 @@ func scanIndividual(row rowScanner) (*IndividualResponse, error) {
 		&resp.Id, &resp.Name, &phone, &email, &resp.ProfessionStatus, &img, &metaData,
 		&resp.CreatedAt, &resp.UpdatedAt, &lastMetAt,
 		&resp.Halqa.Id, &resp.Masjid.Id, &resp.Road.Id, &resp.Address.Id,
-		&resp.Profession.Id, &resp.Profession.Name,
+		&resp.Profession.Id, &resp.Profession.Name, &resp.Profession.Profession.Id, &resp.Profession.Profession.Name,
 	)
 	if err != nil {
 		return nil, err
@@ -158,7 +165,7 @@ func getIndividualByID(c *gofr.Context, id string) (*IndividualResponse, error) 
 	return resp, nil
 }
 
-var fkColumns = []string{"profession_id"}
+var fkColumns = []string{"profession_type_id"}
 
 func mapSQLError(err error) error {
 	msg := strings.ToLower(err.Error())
@@ -173,7 +180,7 @@ func mapSQLError(err error) error {
 			}
 		}
 
-		return gofrHTTP.ErrorInvalidParam{Params: []string{"profession_id"}}
+		return gofrHTTP.ErrorInvalidParam{Params: []string{"profession_type_id"}}
 	default:
 		return err
 	}
@@ -235,7 +242,7 @@ func Create(c *gofr.Context) (any, error) {
 	}
 
 	const insertQuery = `
-INSERT INTO individuals (name, phone, h_id, m_id, r_id, address_id, email, profession_id, profession_status, meta_data, img)
+INSERT INTO individuals (name, phone, h_id, m_id, r_id, address_id, email, profession_type_id, profession_status, meta_data, img)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING id`
 
@@ -243,7 +250,7 @@ RETURNING id`
 
 	err := secondarydb.DB.QueryRowContext(c, insertQuery,
 		req.Name, req.Phone, req.HId, req.MId, req.RId, req.AddressId, req.Email,
-		req.ProfessionId, req.ProfessionStatus, req.MetaData, req.Img,
+		req.ProfessionTypeId, req.ProfessionStatus, req.MetaData, req.Img,
 	).Scan(&id)
 	if err != nil {
 		return nil, mapSQLError(err)
@@ -341,12 +348,12 @@ func Update(c *gofr.Context) (any, error) {
 	const updateQuery = `
 UPDATE individuals
 SET name = $1, phone = $2, h_id = $3, m_id = $4, r_id = $5, address_id = $6, email = $7,
-    profession_id = $8, profession_status = $9, meta_data = $10, img = $11, updated_at = now()
+    profession_type_id = $8, profession_status = $9, meta_data = $10, img = $11, updated_at = now()
 WHERE id = $12 AND deleted_at IS NULL`
 
 	result, err := secondarydb.DB.ExecContext(c, updateQuery,
 		req.Name, req.Phone, req.HId, req.MId, req.RId, req.AddressId, req.Email,
-		req.ProfessionId, req.ProfessionStatus, req.MetaData, req.Img, id,
+		req.ProfessionTypeId, req.ProfessionStatus, req.MetaData, req.Img, id,
 	)
 	if err != nil {
 		return nil, mapSQLError(err)
