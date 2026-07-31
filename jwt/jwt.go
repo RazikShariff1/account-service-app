@@ -23,17 +23,19 @@ func secretKey() []byte {
 }
 
 type Claims struct {
-	Username string `json:"username"`
-	Name     string `json:"name"`
+	AId int `json:"a_id"`
+	HId int `json:"h_id"`
+	MId int `json:"m_id"`
 	jwt.RegisteredClaims
 }
 
-func Generate(username, name string) (string, error) {
+func Generate(aId, hId, mId int) (string, error) {
 	now := time.Now()
 
 	claims := Claims{
-		Username: username,
-		Name:     name,
+		AId: aId,
+		HId: hId,
+		MId: mId,
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(tokenTTL)),

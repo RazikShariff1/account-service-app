@@ -3,6 +3,7 @@ package main
 import (
 	"main/accounts"
 	"main/address"
+	"main/class"
 	"main/h"
 	"main/individuals"
 	"main/m"
@@ -37,6 +38,7 @@ func main() {
 	pgs.RegisterRoutes(app)
 	address.RegisterRoutes(app)
 	professions.RegisterRoutes(app)
+	class.RegisterRoutes(app)
 	individuals.RegisterRoutes(app)
 
 	app.Run()

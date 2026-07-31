@@ -1,0 +1,18 @@
+package migrations
+
+import (
+	"gofr.dev/pkg/gofr/migration"
+)
+
+const addMToRoad = `ALTER TABLE road
+	ADD COLUMN IF NOT EXISTS m_id INT REFERENCES m(id);`
+
+func addRoadMColumn() migration.Migrate {
+	return migration.Migrate{
+		UP: func(d migration.Datasource) error {
+			_, err := d.SQL.Exec(addMToRoad)
+
+			return err
+		},
+	}
+}
