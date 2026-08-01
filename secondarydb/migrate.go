@@ -57,12 +57,30 @@ BEGIN
     END IF;
 END $$;`
 
-// Migrate creates the professions, profession_types and individuals tables in
-// the secondary database if they don't already exist, and migrates
-// individuals off its old profession_id column. professions must run first
-// since profession_types.profession_id references it, and profession_types
-// must run before individuals since individuals.profession_type_id
-// references it.
+// createActivityLogsTable stores a free-form audit trail against an
+// individual: log_name identifies the kind of event (e.g. "city_updated",
+// "profile_created") and old_value/new_value hold whatever JSON shape the
+// caller wants to record for that event. account_id is nullable since some
+// events (e.g. system-generated ones) have no acting account, and it isn't a
+// foreign key: accounts lives in the primary database, not this one, so
+// resolving it to a name is done in application code, not via SQL join.
+const createActivityLogsTable = `CREATE TABLE IF NOT EXISTS activity_logs (
+    id serial PRIMARY KEY,
+    individual_id int NOT NULL REFERENCES individuals(id),
+    account_id int,
+    log_name varchar(100) NOT NULL,
+    old_value jsonb,
+    new_value jsonb,
+    created_at timestamp NOT NULL DEFAULT now()
+);`
+
+// Migrate creates the professions, profession_types, individuals and
+// activity_logs tables in the secondary database if they don't already
+// exist, and migrates individuals off its old profession_id column.
+// professions must run first since profession_types.profession_id
+// references it, profession_types must run before individuals since
+// individuals.profession_type_id references it, and individuals must run
+// before activity_logs since activity_logs.individual_id references it.
 func Migrate() error {
 	if _, err := DB.Exec(createProfessionsTable); err != nil {
 		return err
@@ -77,6 +95,10 @@ func Migrate() error {
 	}
 
 	if _, err := DB.Exec(migrateProfessionIDToProfessionTypeID); err != nil {
+		return err
+	}
+
+	if _, err := DB.Exec(createActivityLogsTable); err != nil {
 		return err
 	}
 

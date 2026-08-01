@@ -2,6 +2,7 @@ package main
 
 import (
 	"main/accounts"
+	"main/activity"
 	"main/address"
 	"main/h"
 	"main/individuals"
@@ -43,6 +44,7 @@ func main() {
 	professions.RegisterRoutes(app)
 	professiontype.RegisterRoutes(app)
 	individuals.RegisterRoutes(app)
+	activity.RegisterRoutes(app)
 
 	app.Run()
 }
