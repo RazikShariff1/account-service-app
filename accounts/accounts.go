@@ -1,14 +1,23 @@
 package accounts
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/mail"
+	"strconv"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
 	"gofr.dev/pkg/gofr"
 	gofrHTTP "gofr.dev/pkg/gofr/http"
+
+	"main/h"
+	"main/jwt"
+	"main/m"
+	"main/middleware"
 )
 
 const minPasswordLength = 8
@@ -21,11 +30,14 @@ type Account struct {
 	Name         string `json:"name"`
 	PhoneNumber  string `json:"phone_number"`
 	Status       string `json:"status"`
+	HId          int    `json:"h_id"`
+	MId          int    `json:"m_id"`
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
 }
 
 func RegisterRoutes(a *gofr.App) {
+	a.POST("/login", Login)
 	a.POST("/accounts", Create)
 	a.GET("/accounts", GetAll)
 	a.GET("/accounts/{id}", Get)
@@ -48,6 +60,14 @@ func validateAccount(acc *Account, requirePassword bool) error {
 		missing = append(missing, "password")
 	}
 
+	if requirePassword && acc.HId == 0 {
+		missing = append(missing, "h_id")
+	}
+
+	if requirePassword && acc.MId == 0 {
+		missing = append(missing, "m_id")
+	}
+
 	if len(missing) > 0 {
 		return gofrHTTP.ErrorMissingParam{Params: missing}
 	}
@@ -63,13 +83,121 @@ func validateAccount(acc *Account, requirePassword bool) error {
 	return nil
 }
 
+// validateReferenceIDs checks h_id/m_id against the h/m tables, when set.
+func validateReferenceIDs(c *gofr.Context, acc *Account) error {
+	var invalid []string
+
+	if acc.HId != 0 {
+		if _, err := h.GetByID(c, c.SQL, strconv.Itoa(acc.HId)); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				invalid = append(invalid, "h_id")
+			} else {
+				return err
+			}
+		}
+	}
+
+	if acc.MId != 0 {
+		if _, err := m.GetByID(c, c.SQL, strconv.Itoa(acc.MId)); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				invalid = append(invalid, "m_id")
+			} else {
+				return err
+			}
+		}
+	}
+
+	if len(invalid) > 0 {
+		return gofrHTTP.ErrorInvalidParam{Params: invalid}
+	}
+
+	return nil
+}
+
+type ErrInvalidCredentials struct{}
+
+func (ErrInvalidCredentials) Error() string {
+	return "invalid email or password"
+}
+
+func (ErrInvalidCredentials) StatusCode() int {
+	return http.StatusUnauthorized
+}
+
+type ErrUnauthorized struct{}
+
+func (ErrUnauthorized) Error() string {
+	return "missing request claims"
+}
+
+func (ErrUnauthorized) StatusCode() int {
+	return http.StatusUnauthorized
+}
+
+type loginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type loginResponse struct {
+	Token string `json:"token"`
+}
+
+func Login(c *gofr.Context) (any, error) {
+	var req loginRequest
+	if err := c.Bind(&req); err != nil {
+		return nil, err
+	}
+
+	var (
+		id           int
+		name         string
+		passwordHash string
+		hID, mID     sql.NullInt32
+	)
+
+	err := c.SQL.QueryRowContext(c,
+		`SELECT id, name, password_hash, h_id, m_id FROM accounts WHERE email = $1`, req.Email).
+		Scan(&id, &name, &passwordHash, &hID, &mID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrInvalidCredentials{}
+		}
+
+		return nil, err
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
+		return nil, ErrInvalidCredentials{}
+	}
+
+	token, err := jwt.Generate(id, int(hID.Int32), int(mID.Int32))
+	if err != nil {
+		return nil, err
+	}
+
+	return loginResponse{Token: token}, nil
+}
+
 func Create(c *gofr.Context) (any, error) {
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, ErrUnauthorized{}
+	}
+
 	var acc Account
 	if err := c.Bind(&acc); err != nil {
 		return nil, err
 	}
 
+	acc.HId = claims.HId
+	acc.MId = claims.MId
+
 	if err := validateAccount(&acc, true); err != nil {
+		return nil, err
+	}
+
+	if err := validateReferenceIDs(c, &acc); err != nil {
 		return nil, err
 	}
 
@@ -86,9 +214,9 @@ func Create(c *gofr.Context) (any, error) {
 	acc.UpdatedAt = now
 
 	err = c.SQL.QueryRowContext(c,
-		`INSERT INTO accounts (email, password_hash, name, phone_number, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		acc.Email, acc.PasswordHash, acc.Name, acc.PhoneNumber, acc.Status, acc.CreatedAt, acc.UpdatedAt).
+		`INSERT INTO accounts (email, password_hash, name, phone_number, status, h_id, m_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+		acc.Email, acc.PasswordHash, acc.Name, acc.PhoneNumber, acc.Status, acc.HId, acc.MId, acc.CreatedAt, acc.UpdatedAt).
 		Scan(&acc.Id)
 	if err != nil {
 		return nil, err
@@ -100,8 +228,14 @@ func Create(c *gofr.Context) (any, error) {
 }
 
 func GetAll(c *gofr.Context) (any, error) {
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, ErrUnauthorized{}
+	}
+
 	rows, err := c.SQL.QueryContext(c,
-		`SELECT id, email, name, phone_number, status, created_at, updated_at FROM accounts`)
+		`SELECT id, email, name, phone_number, status, h_id, m_id, created_at, updated_at
+		FROM accounts WHERE m_id = $1`, claims.MId)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +247,7 @@ func GetAll(c *gofr.Context) (any, error) {
 		var acc Account
 
 		if err := rows.Scan(&acc.Id, &acc.Email, &acc.Name, &acc.PhoneNumber,
-			&acc.Status, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
+			&acc.Status, &acc.HId, &acc.MId, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
 			return nil, err
 		}
 
@@ -126,12 +260,22 @@ func GetAll(c *gofr.Context) (any, error) {
 func Get(c *gofr.Context) (any, error) {
 	id := c.PathParam("id")
 
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, ErrUnauthorized{}
+	}
+
 	var acc Account
 
 	err := c.SQL.QueryRowContext(c,
-		`SELECT id, email, name, phone_number, status, created_at, updated_at FROM accounts WHERE id = $1`, id).
-		Scan(&acc.Id, &acc.Email, &acc.Name, &acc.PhoneNumber, &acc.Status, &acc.CreatedAt, &acc.UpdatedAt)
+		`SELECT id, email, name, phone_number, status, h_id, m_id, created_at, updated_at
+		FROM accounts WHERE id = $1 AND m_id = $2`, id, claims.MId).
+		Scan(&acc.Id, &acc.Email, &acc.Name, &acc.PhoneNumber, &acc.Status, &acc.HId, &acc.MId, &acc.CreatedAt, &acc.UpdatedAt)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
+		}
+
 		return nil, err
 	}
 
@@ -141,38 +285,61 @@ func Get(c *gofr.Context) (any, error) {
 func Update(c *gofr.Context) (any, error) {
 	id := c.PathParam("id")
 
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, ErrUnauthorized{}
+	}
+
 	var acc Account
 	if err := c.Bind(&acc); err != nil {
 		return nil, err
 	}
 
+	acc.HId = claims.HId
+	acc.MId = claims.MId
+
 	if err := validateAccount(&acc, false); err != nil {
+		return nil, err
+	}
+
+	if err := validateReferenceIDs(c, &acc); err != nil {
 		return nil, err
 	}
 
 	acc.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
+	var result sql.Result
+
+	var err error
+
 	if acc.Password != "" {
-		hash, err := bcrypt.GenerateFromPassword([]byte(acc.Password), bcrypt.DefaultCost)
-		if err != nil {
-			return nil, err
+		hash, hashErr := bcrypt.GenerateFromPassword([]byte(acc.Password), bcrypt.DefaultCost)
+		if hashErr != nil {
+			return nil, hashErr
 		}
 
-		_, err = c.SQL.ExecContext(c,
+		result, err = c.SQL.ExecContext(c,
 			`UPDATE accounts SET email = $1, password_hash = $2, name = $3, phone_number = $4, status = $5,
-			updated_at = $6 WHERE id = $7`,
-			acc.Email, string(hash), acc.Name, acc.PhoneNumber, acc.Status, acc.UpdatedAt, id)
-		if err != nil {
-			return nil, err
-		}
+			h_id = $6, m_id = $7, updated_at = $8 WHERE id = $9 AND m_id = $10`,
+			acc.Email, string(hash), acc.Name, acc.PhoneNumber, acc.Status, acc.HId, acc.MId, acc.UpdatedAt, id, claims.MId)
 	} else {
-		_, err := c.SQL.ExecContext(c,
+		result, err = c.SQL.ExecContext(c,
 			`UPDATE accounts SET email = $1, name = $2, phone_number = $3, status = $4,
-			updated_at = $5 WHERE id = $6`,
-			acc.Email, acc.Name, acc.PhoneNumber, acc.Status, acc.UpdatedAt, id)
-		if err != nil {
-			return nil, err
-		}
+			h_id = $5, m_id = $6, updated_at = $7 WHERE id = $8 AND m_id = $9`,
+			acc.Email, acc.Name, acc.PhoneNumber, acc.Status, acc.HId, acc.MId, acc.UpdatedAt, id, claims.MId)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+
+	if rowsAffected == 0 {
+		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
 	}
 
 	return fmt.Sprintf("account successfully updated with id: %s", id), nil
@@ -181,9 +348,23 @@ func Update(c *gofr.Context) (any, error) {
 func Delete(c *gofr.Context) (any, error) {
 	id := c.PathParam("id")
 
-	_, err := c.SQL.ExecContext(c, `DELETE FROM accounts WHERE id = $1`, id)
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, ErrUnauthorized{}
+	}
+
+	result, err := c.SQL.ExecContext(c, `DELETE FROM accounts WHERE id = $1 AND m_id = $2`, id, claims.MId)
 	if err != nil {
 		return nil, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+
+	if rowsAffected == 0 {
+		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
 	}
 
 	return fmt.Sprintf("account successfully deleted with id: %s", id), nil

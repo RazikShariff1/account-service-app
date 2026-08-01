@@ -48,3 +48,10 @@ func Auth() gofrHTTP.Middleware {
 		})
 	}
 }
+
+// ClaimsFromContext returns the JWT claims stashed by Auth, for handlers
+// that need to scope queries to the caller's account/h_id/m_id.
+func ClaimsFromContext(ctx context.Context) (*jwt.Claims, bool) {
+	claims, ok := ctx.Value(ClaimsContextKey).(*jwt.Claims)
+	return claims, ok
+}

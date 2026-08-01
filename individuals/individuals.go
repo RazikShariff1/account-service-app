@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -12,8 +14,19 @@ import (
 	gofrSQL "gofr.dev/pkg/gofr/datasource/sql"
 	gofrHTTP "gofr.dev/pkg/gofr/http"
 
+	"main/middleware"
 	"main/secondarydb"
 )
+
+type ErrUnauthorized struct{}
+
+func (ErrUnauthorized) Error() string {
+	return "missing request claims"
+}
+
+func (ErrUnauthorized) StatusCode() int {
+	return http.StatusUnauthorized
+}
 
 // IndividualRequest is the payload accepted by the create and update endpoints.
 type IndividualRequest struct {
@@ -158,8 +171,8 @@ func scanIndividual(row rowScanner) (*IndividualResponse, error) {
 	return &resp, nil
 }
 
-func getIndividualByID(c *gofr.Context, id string) (*IndividualResponse, error) {
-	row := secondarydb.DB.QueryRowContext(c, selectIndividualQuery+" AND i.id = $1", id)
+func getIndividualByID(c *gofr.Context, id string, mID int) (*IndividualResponse, error) {
+	row := secondarydb.DB.QueryRowContext(c, selectIndividualQuery+" AND i.m_id = $1 AND i.id = $2", mID, id)
 
 	resp, err := scanIndividual(row)
 	if err != nil {
@@ -262,7 +275,7 @@ RETURNING id`
 		return nil, mapSQLError(err)
 	}
 
-	return getIndividualByID(c, strconv.Itoa(id))
+	return getIndividualByID(c, strconv.Itoa(id), req.MId)
 }
 
 func validate(c *gofr.Context, req *IndividualRequest) error {
@@ -285,11 +298,55 @@ func validate(c *gofr.Context, req *IndividualRequest) error {
 	return validateReferenceIDs(c, req)
 }
 
-// GetAll returns every individual that has not been soft-deleted.
-func GetAll(c *gofr.Context) (interface{}, error) {
-	filter, err := getFilters(c)
+// GetAll returns every individual that has not been soft-deleted, scoped to
+// the caller's masjid.
+func GetAll(c *gofr.Context) (any, error) {
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, ErrUnauthorized{}
+	}
 
-	rows, err := secondarydb.DB.QueryContext(c, selectIndividualQuery+" ORDER BY i.id")
+	filter, err := getFilters(c)
+	if err != nil {
+		return nil, err
+	}
+
+	query := selectIndividualQuery + " AND i.m_id = $1"
+	args := []any{claims.MId}
+
+	if filter.H_id != 0 {
+		args = append(args, filter.H_id)
+		query += fmt.Sprintf(" AND i.h_id = $%d", len(args))
+	}
+
+	if filter.Road_id != "" {
+		roadID, err := strconv.Atoi(filter.Road_id)
+		if err != nil {
+			return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"road"}}
+		}
+
+		args = append(args, roadID)
+		query += fmt.Sprintf(" AND i.r_id = $%d", len(args))
+	}
+
+	if filter.Name != "" {
+		args = append(args, "%"+filter.Name+"%")
+		query += fmt.Sprintf(" AND i.name ILIKE $%d", len(args))
+	}
+
+	if filter.Profession != "" {
+		args = append(args, "%"+filter.Profession+"%")
+		query += fmt.Sprintf(" AND p.name ILIKE $%d", len(args))
+	}
+
+	if filter.ProfessionType != "" {
+		args = append(args, "%"+filter.ProfessionType+"%")
+		query += fmt.Sprintf(" AND pt.name ILIKE $%d", len(args))
+	}
+
+	query += " ORDER BY i.id"
+
+	rows, err := secondarydb.DB.QueryContext(c, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -325,9 +382,23 @@ func GetAll(c *gofr.Context) (interface{}, error) {
 }
 
 func getFilters(c *gofr.Context) (Filter, error) {
-	if _, err := strconv.Atoi(c.Param("m_id")); err == nil {
-		return Filter{}, err
+	var filter Filter
+
+	if hID := c.Param("h_id"); hID != "" {
+		v, err := strconv.Atoi(hID)
+		if err != nil {
+			return Filter{}, gofrHTTP.ErrorInvalidParam{Params: []string{"h_id"}}
+		}
+
+		filter.H_id = v
 	}
+
+	filter.Name = c.Param("name")
+	filter.Profession = c.Param("profession")
+	filter.ProfessionType = c.Param("profession_type")
+	filter.Road_id = c.Param("road")
+
+	return filter, nil
 }
 
 // Get returns a single individual by id.
@@ -342,12 +413,22 @@ func Get(c *gofr.Context) (any, error) {
 		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"id"}}
 	}
 
-	return getIndividualByID(c, id)
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, ErrUnauthorized{}
+	}
+
+	return getIndividualByID(c, id, claims.MId)
 }
 
 // Update replaces an existing individual's details.
 func Update(c *gofr.Context) (any, error) {
 	id := c.PathParam("id")
+
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, ErrUnauthorized{}
+	}
 
 	var req IndividualRequest
 
@@ -363,11 +444,11 @@ func Update(c *gofr.Context) (any, error) {
 UPDATE individuals
 SET name = $1, phone = $2, h_id = $3, m_id = $4, r_id = $5, address_id = $6, email = $7,
     profession_type_id = $8, profession_status = $9, meta_data = $10, img = $11, updated_at = now()
-WHERE id = $12 AND deleted_at IS NULL`
+WHERE id = $12 AND m_id = $13 AND deleted_at IS NULL`
 
 	result, err := secondarydb.DB.ExecContext(c, updateQuery,
 		req.Name, req.Phone, req.HId, req.MId, req.RId, req.AddressId, req.Email,
-		req.ProfessionTypeId, req.ProfessionStatus, req.MetaData, req.Img, id,
+		req.ProfessionTypeId, req.ProfessionStatus, req.MetaData, req.Img, id, claims.MId,
 	)
 	if err != nil {
 		return nil, mapSQLError(err)
@@ -382,16 +463,21 @@ WHERE id = $12 AND deleted_at IS NULL`
 		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
 	}
 
-	return getIndividualByID(c, id)
+	return getIndividualByID(c, id, claims.MId)
 }
 
 // Delete soft-deletes an individual by stamping deleted_at.
 func Delete(c *gofr.Context) (any, error) {
 	id := c.PathParam("id")
 
-	const deleteQuery = `UPDATE individuals SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, ErrUnauthorized{}
+	}
 
-	result, err := secondarydb.DB.ExecContext(c, deleteQuery, id)
+	const deleteQuery = `UPDATE individuals SET deleted_at = now() WHERE id = $1 AND m_id = $2 AND deleted_at IS NULL`
+
+	result, err := secondarydb.DB.ExecContext(c, deleteQuery, id, claims.MId)
 	if err != nil {
 		return nil, err
 	}
@@ -418,6 +504,30 @@ func RegisterRoutes(a *gofr.App) {
 	a.DELETE("/individual/{id}", Delete)
 }
 
+// Met stamps last_met_at on an individual to record a home visit.
 func Met(c *gofr.Context) (any, error) {
+	id := c.PathParam("id")
 
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, ErrUnauthorized{}
+	}
+
+	const metQuery = `UPDATE individuals SET last_met_at = now() WHERE id = $1 AND m_id = $2 AND deleted_at IS NULL`
+
+	result, err := secondarydb.DB.ExecContext(c, metQuery, id, claims.MId)
+	if err != nil {
+		return nil, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+
+	if rowsAffected == 0 {
+		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
+	}
+
+	return getIndividualByID(c, id, claims.MId)
 }

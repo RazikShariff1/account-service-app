@@ -13,5 +13,7 @@ func All() map[int64]migration.Migrate {
 		1722268805: createTableSchools(),
 		1722268806: createTablePgs(),
 		1722268807: createTableAddresses(),
+		1722268808: addAccountsHMColumns(),
+		1722268809: addRoadMColumn(),
 	}
 }

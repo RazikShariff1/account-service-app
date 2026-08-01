@@ -3,13 +3,18 @@ package road
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/lib/pq"
 
 	"gofr.dev/pkg/gofr"
 	gofrHTTP "gofr.dev/pkg/gofr/http"
+
+	"main/m"
+	"main/middleware"
 )
 
 // querier is satisfied by both c.SQL and a *sql.Tx, so GetByID can run
@@ -28,7 +33,7 @@ type multiQuerier interface {
 // callers (e.g. individuals' list enrichment) that would otherwise issue
 // one GetByID call per row.
 func GetByIDs(db multiQuerier, ids []int) ([]Road, error) {
-	rows, err := db.Query(`SELECT id, name, created_at, updated_at, status FROM road WHERE id = ANY($1)`, pq.Array(ids))
+	rows, err := db.Query(`SELECT id, name, created_at, updated_at, status, m_id FROM road WHERE id = ANY($1)`, pq.Array(ids))
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +44,7 @@ func GetByIDs(db multiQuerier, ids []int) ([]Road, error) {
 	for rows.Next() {
 		var v Road
 
-		if err := rows.Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status); err != nil {
+		if err := rows.Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status, &v.MId); err != nil {
 			return nil, err
 		}
 
@@ -55,6 +60,7 @@ type Road struct {
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 	Status    string `json:"status"`
+	MId       int    `json:"m_id"`
 }
 
 func RegisterRoutes(a *gofr.App) {
@@ -76,8 +82,25 @@ func validate(v *Road) error {
 		missing = append(missing, "status")
 	}
 
+	if v.MId == 0 {
+		missing = append(missing, "m_id")
+	}
+
 	if len(missing) > 0 {
 		return gofrHTTP.ErrorMissingParam{Params: missing}
+	}
+
+	return nil
+}
+
+// validateMId checks m_id against the m table.
+func validateMId(c *gofr.Context, v *Road) error {
+	if _, err := m.GetByID(c, c.SQL, strconv.Itoa(v.MId)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return gofrHTTP.ErrorInvalidParam{Params: []string{"m_id"}}
+		}
+
+		return err
 	}
 
 	return nil
@@ -93,12 +116,17 @@ func Create(c *gofr.Context) (any, error) {
 		return nil, err
 	}
 
+	if err := validateMId(c, &v); err != nil {
+		return nil, err
+	}
+
 	now := time.Now().UTC().Format(time.RFC3339)
 	v.CreatedAt = now
 	v.UpdatedAt = now
 
-	err := c.SQL.QueryRowContext(c, `INSERT INTO road (name, created_at, updated_at, status) VALUES ($1, $2, $3, $4) RETURNING id`,
-		v.Name, v.CreatedAt, v.UpdatedAt, v.Status).Scan(&v.Id)
+	err := c.SQL.QueryRowContext(c,
+		`INSERT INTO road (name, created_at, updated_at, status, m_id) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		v.Name, v.CreatedAt, v.UpdatedAt, v.Status, v.MId).Scan(&v.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +135,13 @@ func Create(c *gofr.Context) (any, error) {
 }
 
 func GetAll(c *gofr.Context) (any, error) {
-	rows, err := c.SQL.QueryContext(c, `SELECT id, name, created_at, updated_at, status FROM road`)
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"token"}}
+	}
+
+	rows, err := c.SQL.QueryContext(c,
+		`SELECT id, name, created_at, updated_at, status, m_id FROM road WHERE m_id = $1`, claims.MId)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +152,7 @@ func GetAll(c *gofr.Context) (any, error) {
 	for rows.Next() {
 		var v Road
 
-		if err := rows.Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status); err != nil {
+		if err := rows.Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status, &v.MId); err != nil {
 			return nil, err
 		}
 
@@ -128,17 +162,14 @@ func GetAll(c *gofr.Context) (any, error) {
 	return result, nil
 }
 
-// GetByID looks up a single road by id. Returns sql.ErrNoRows, unwrapped,
-// when no row matches, so callers outside this package (e.g. individuals)
-// can distinguish "not found" from other errors. db is typically c.SQL, or
-// a caller-managed *sql.Tx when looking up several rows across packages in
-// one request (Neon's PgBouncer pooler mishandles multiple sequential
-// extended-protocol queries issued outside a transaction).
+// GetByID looks up a single road by id, unscoped by m_id. Used internally
+// by individuals' enrichment, which scopes at the individuals-query level
+// instead. db is typically c.SQL, or a caller-managed *sql.Tx.
 func GetByID(ctx context.Context, db querier, id string) (*Road, error) {
 	var v Road
 
-	err := db.QueryRowContext(ctx, `SELECT id, name, created_at, updated_at, status FROM road WHERE id = $1`, id).
-		Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status)
+	err := db.QueryRowContext(ctx, `SELECT id, name, created_at, updated_at, status, m_id FROM road WHERE id = $1`, id).
+		Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status, &v.MId)
 	if err != nil {
 		return nil, err
 	}
@@ -147,11 +178,36 @@ func GetByID(ctx context.Context, db querier, id string) (*Road, error) {
 }
 
 func Get(c *gofr.Context) (any, error) {
-	return GetByID(c, c.SQL, c.PathParam("id"))
+	id := c.PathParam("id")
+
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"token"}}
+	}
+
+	v, err := GetByID(c, c.SQL, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
+		}
+
+		return nil, err
+	}
+
+	if v.MId != claims.MId {
+		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
+	}
+
+	return v, nil
 }
 
 func Update(c *gofr.Context) (any, error) {
 	id := c.PathParam("id")
+
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"token"}}
+	}
 
 	var v Road
 	if err := c.Bind(&v); err != nil {
@@ -162,12 +218,26 @@ func Update(c *gofr.Context) (any, error) {
 		return nil, err
 	}
 
+	if err := validateMId(c, &v); err != nil {
+		return nil, err
+	}
+
 	v.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
-	_, err := c.SQL.ExecContext(c, `UPDATE road SET name = $1, updated_at = $2, status = $3 WHERE id = $4`,
-		v.Name, v.UpdatedAt, v.Status, id)
+	result, err := c.SQL.ExecContext(c,
+		`UPDATE road SET name = $1, updated_at = $2, status = $3, m_id = $4 WHERE id = $5 AND m_id = $6`,
+		v.Name, v.UpdatedAt, v.Status, v.MId, id, claims.MId)
 	if err != nil {
 		return nil, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+
+	if rowsAffected == 0 {
+		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
 	}
 
 	return fmt.Sprintf("road successfully updated with id: %s", id), nil
@@ -176,9 +246,23 @@ func Update(c *gofr.Context) (any, error) {
 func Delete(c *gofr.Context) (any, error) {
 	id := c.PathParam("id")
 
-	_, err := c.SQL.ExecContext(c, `DELETE FROM road WHERE id = $1`, id)
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"token"}}
+	}
+
+	result, err := c.SQL.ExecContext(c, `DELETE FROM road WHERE id = $1 AND m_id = $2`, id, claims.MId)
 	if err != nil {
 		return nil, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+
+	if rowsAffected == 0 {
+		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
 	}
 
 	return fmt.Sprintf("road successfully deleted with id: %s", id), nil

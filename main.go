@@ -6,6 +6,7 @@ import (
 	"main/h"
 	"main/individuals"
 	"main/m"
+	"main/middleware"
 	"main/migrations"
 	"main/pgs"
 	"main/professions"
@@ -29,6 +30,8 @@ func main() {
 	}
 
 	app.Migrate(migrations.All())
+
+	app.UseMiddleware(middleware.Auth())
 
 	m.RegisterRoutes(app)
 	h.RegisterRoutes(app)
