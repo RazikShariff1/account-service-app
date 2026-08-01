@@ -30,8 +30,12 @@ type IndividualRequest struct {
 	Img              *string         `json:"img"`
 }
 
-// IndividualResponse is the enriched view returned by the get/list endpoints,
-// with foreign keys resolved to their referenced records.
+type Pagination struct {
+	Page   int `json:"page"`
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
 type IndividualResponse struct {
 	Id               int             `json:"id"`
 	Name             string          `json:"name"`
@@ -87,6 +91,14 @@ type Address struct {
 	Country   string   `json:"country"`
 	Latitude  *float64 `json:"latitude"`
 	Longitude *float64 `json:"longitude"`
+}
+
+type Filter struct {
+	H_id           int    `json:"h_id"`
+	Name           string `json:"name"`
+	Profession     string `json:"profession"`
+	ProfessionType string `json:"profession_type"`
+	Road_id        string `json:"road"`
 }
 
 const selectIndividualQuery = `
@@ -186,12 +198,6 @@ func mapSQLError(err error) error {
 	}
 }
 
-// validateReferenceIDs checks h_id, m_id, r_id and address_id against the
-// primary account-service database, since individuals only stores the ids.
-//
-// Checked within a single transaction (see withPrimaryTx in lookup.go),
-// since Neon's PgBouncer pooler mishandles multiple sequential
-// extended-protocol queries issued outside a transaction.
 func validateReferenceIDs(c *gofr.Context, req *IndividualRequest) error {
 	var invalid []string
 
@@ -264,7 +270,7 @@ func validate(c *gofr.Context, req *IndividualRequest) error {
 		return gofrHTTP.ErrorMissingParam{Params: []string{"name"}}
 	}
 
-	if len(req.Name) < 5 {
+	if len(req.Name) < 3 {
 		return gofrHTTP.ErrorInvalidParam{Params: []string{"name"}}
 	}
 
@@ -280,7 +286,9 @@ func validate(c *gofr.Context, req *IndividualRequest) error {
 }
 
 // GetAll returns every individual that has not been soft-deleted.
-func GetAll(c *gofr.Context) (any, error) {
+func GetAll(c *gofr.Context) (interface{}, error) {
+	filter, err := getFilters(c)
+
 	rows, err := secondarydb.DB.QueryContext(c, selectIndividualQuery+" ORDER BY i.id")
 	if err != nil {
 		return nil, err
@@ -314,6 +322,12 @@ func GetAll(c *gofr.Context) (any, error) {
 	}
 
 	return individuals, nil
+}
+
+func getFilters(c *gofr.Context) (Filter, error) {
+	if _, err := strconv.Atoi(c.Param("m_id")); err == nil {
+		return Filter{}, err
+	}
 }
 
 // Get returns a single individual by id.
@@ -400,5 +414,10 @@ func RegisterRoutes(a *gofr.App) {
 	a.GET("/individual", GetAll)
 	a.GET("/individual/{id}", Get)
 	a.PUT("/individual/{id}", Update)
+	a.PUT("/individual/{id}/met", Met)
 	a.DELETE("/individual/{id}", Delete)
+}
+
+func Met(c *gofr.Context) (any, error) {
+
 }
