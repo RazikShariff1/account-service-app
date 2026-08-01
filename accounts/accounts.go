@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/mail"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -38,6 +39,7 @@ type Account struct {
 
 func RegisterRoutes(a *gofr.App) {
 	a.POST("/login", Login)
+	a.POST("/signup", Signup)
 	a.POST("/accounts", Create)
 	a.GET("/accounts", GetAll)
 	a.GET("/accounts/{id}", Get)
@@ -179,6 +181,78 @@ func Login(c *gofr.Context) (any, error) {
 	return loginResponse{Token: token}, nil
 }
 
+// hashAndInsertAccount hashes acc.Password and inserts the account row,
+// populating acc.Id and clearing acc.Password/PasswordHash afterward.
+func hashAndInsertAccount(c *gofr.Context, acc *Account) error {
+	hash, err := bcrypt.GenerateFromPassword([]byte(acc.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+
+	acc.PasswordHash = string(hash)
+	acc.Password = ""
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	acc.CreatedAt = now
+	acc.UpdatedAt = now
+
+	err = c.SQL.QueryRowContext(c,
+		`INSERT INTO accounts (email, password_hash, name, phone_number, status, h_id, m_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+		acc.Email, acc.PasswordHash, acc.Name, acc.PhoneNumber, acc.Status, acc.HId, acc.MId, acc.CreatedAt, acc.UpdatedAt).
+		Scan(&acc.Id)
+	if err != nil {
+		return err
+	}
+
+	acc.PasswordHash = ""
+
+	return nil
+}
+
+func isUniqueViolation(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique constraint") || strings.Contains(msg, "duplicate")
+}
+
+type signupResponse struct {
+	Account Account `json:"account"`
+	Token   string  `json:"token"`
+}
+
+// Signup is the public, unauthenticated counterpart to Create: it lets a new
+// user register directly, taking h_id/m_id from the request body since there
+// are no claims yet to derive them from.
+func Signup(c *gofr.Context) (any, error) {
+	var acc Account
+	if err := c.Bind(&acc); err != nil {
+		return nil, err
+	}
+
+	if err := validateAccount(&acc, true); err != nil {
+		return nil, err
+	}
+
+	if err := validateReferenceIDs(c, &acc); err != nil {
+		return nil, err
+	}
+
+	if err := hashAndInsertAccount(c, &acc); err != nil {
+		if isUniqueViolation(err) {
+			return nil, gofrHTTP.ErrorEntityAlreadyExist{}
+		}
+
+		return nil, err
+	}
+
+	token, err := jwt.Generate(acc.Id, acc.HId, acc.MId)
+	if err != nil {
+		return nil, err
+	}
+
+	return signupResponse{Account: acc, Token: token}, nil
+}
+
 func Create(c *gofr.Context) (any, error) {
 	claims, ok := middleware.ClaimsFromContext(c)
 	if !ok {
@@ -201,28 +275,13 @@ func Create(c *gofr.Context) (any, error) {
 		return nil, err
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(acc.Password), bcrypt.DefaultCost)
-	if err != nil {
+	if err := hashAndInsertAccount(c, &acc); err != nil {
+		if isUniqueViolation(err) {
+			return nil, gofrHTTP.ErrorEntityAlreadyExist{}
+		}
+
 		return nil, err
 	}
-
-	acc.PasswordHash = string(hash)
-	acc.Password = ""
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	acc.CreatedAt = now
-	acc.UpdatedAt = now
-
-	err = c.SQL.QueryRowContext(c,
-		`INSERT INTO accounts (email, password_hash, name, phone_number, status, h_id, m_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-		acc.Email, acc.PasswordHash, acc.Name, acc.PhoneNumber, acc.Status, acc.HId, acc.MId, acc.CreatedAt, acc.UpdatedAt).
-		Scan(&acc.Id)
-	if err != nil {
-		return nil, err
-	}
-
-	acc.PasswordHash = ""
 
 	return acc, nil
 }

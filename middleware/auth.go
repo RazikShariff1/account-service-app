@@ -17,6 +17,7 @@ const ClaimsContextKey contextKey = "claims"
 // publicPaths bypass JWT validation entirely.
 var publicPaths = map[string]bool{
 	"/login":              true,
+	"/signup":             true,
 	"/.well-known/health": true,
 	"/.well-known/alive":  true,
 }
