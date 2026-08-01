@@ -15,6 +15,7 @@ import (
 	gofrHTTP "gofr.dev/pkg/gofr/http"
 
 	"main/h"
+	"main/middleware"
 )
 
 func isUniqueViolation(err error) bool {
@@ -210,6 +211,20 @@ func Get(c *gofr.Context) (any, error) {
 func Update(c *gofr.Context) (any, error) {
 	id := c.PathParam("id")
 
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"token"}}
+	}
+
+	idInt, err := strconv.Atoi(id)
+	if err != nil {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"id"}}
+	}
+
+	if idInt != claims.MId {
+		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
+	}
+
 	var v M
 	if err := c.Bind(&v); err != nil {
 		return nil, err
@@ -225,7 +240,7 @@ func Update(c *gofr.Context) (any, error) {
 
 	v.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
-	_, err := c.SQL.ExecContext(c,
+	_, err = c.SQL.ExecContext(c,
 		`UPDATE m SET name = $1, updated_at = $2, status = $3, h_id = NULLIF($4, 0) WHERE id = $5`,
 		v.Name, v.UpdatedAt, v.Status, v.HId, id)
 	if err != nil {
@@ -238,7 +253,21 @@ func Update(c *gofr.Context) (any, error) {
 func Delete(c *gofr.Context) (any, error) {
 	id := c.PathParam("id")
 
-	_, err := c.SQL.ExecContext(c, `DELETE FROM m WHERE id = $1`, id)
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"token"}}
+	}
+
+	idInt, err := strconv.Atoi(id)
+	if err != nil {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"id"}}
+	}
+
+	if idInt != claims.MId {
+		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
+	}
+
+	_, err = c.SQL.ExecContext(c, `DELETE FROM m WHERE id = $1`, id)
 	if err != nil {
 		return nil, err
 	}

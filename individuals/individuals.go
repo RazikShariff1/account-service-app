@@ -262,6 +262,9 @@ func Create(c *gofr.Context) (any, error) {
 		return nil, err
 	}
 
+	req.HId = claims.HId
+	req.MId = claims.MId
+
 	if err := validate(c, &req); err != nil {
 		return nil, err
 	}
@@ -286,12 +289,7 @@ RETURNING id`
 		return nil, err
 	}
 
-	newValue, err := json.Marshal(resp)
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err := activity.Record(c, id, &claims.AId, "individual_created", nil, newValue, ""); err != nil {
+	if _, err := activity.Record(c, id, &claims.AId, "individual_created", nil, nil, "Individual created"); err != nil {
 		return nil, err
 	}
 
@@ -455,6 +453,9 @@ func Update(c *gofr.Context) (any, error) {
 	if err := c.Bind(&req); err != nil {
 		return nil, err
 	}
+
+	req.HId = claims.HId
+	req.MId = claims.MId
 
 	if err := validate(c, &req); err != nil {
 		return nil, err

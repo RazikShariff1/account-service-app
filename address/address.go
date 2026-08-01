@@ -182,9 +182,16 @@ func Create(c *gofr.Context) (any, error) {
 }
 
 func GetAll(c *gofr.Context) (any, error) {
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"token"}}
+	}
+
 	rows, err := c.SQL.QueryContext(c,
-		`SELECT id, road_id, door_no, landmark, city, state, pincode, country, latitude, longitude, img, created_at, updated_at
-		FROM addresses`)
+		`SELECT a.id, a.road_id, a.door_no, a.landmark, a.city, a.state, a.pincode, a.country, a.latitude, a.longitude, a.img, a.created_at, a.updated_at
+		FROM addresses a
+		JOIN road r ON r.id = a.road_id
+		WHERE r.m_id = $1`, claims.MId)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +226,32 @@ func GetByID(ctx context.Context, db querier, id string) (AddressResponse, error
 }
 
 func Get(c *gofr.Context) (any, error) {
-	return GetByID(c, c.SQL, c.PathParam("id"))
+	id := c.PathParam("id")
+
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"token"}}
+	}
+
+	v, err := GetByID(c, c.SQL, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
+		}
+
+		return nil, err
+	}
+
+	r, err := road.GetByID(c, c.SQL, strconv.Itoa(v.RoadId))
+	if err != nil {
+		return nil, err
+	}
+
+	if r.MId != claims.MId {
+		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
+	}
+
+	return v, nil
 }
 
 func Update(c *gofr.Context) (any, error) {
@@ -243,12 +275,22 @@ func Update(c *gofr.Context) (any, error) {
 		return nil, err
 	}
 
-	_, err := c.SQL.ExecContext(c,
+	result, err := c.SQL.ExecContext(c,
 		`UPDATE addresses SET road_id = $1, door_no = $2, landmark = $3, city = $4, state = $5, pincode = $6,
-		country = $7, latitude = $8, longitude = $9, img = $10, updated_at = now() WHERE id = $11`,
-		v.RoadId, v.DoorNo, v.Landmark, v.City, v.State, v.Pincode, v.Country, v.Latitude, v.Longitude, v.Img, id)
+		country = $7, latitude = $8, longitude = $9, img = $10, updated_at = now()
+		WHERE id = $11 AND road_id IN (SELECT id FROM road WHERE m_id = $12)`,
+		v.RoadId, v.DoorNo, v.Landmark, v.City, v.State, v.Pincode, v.Country, v.Latitude, v.Longitude, v.Img, id, claims.MId)
 	if err != nil {
 		return nil, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+
+	if rowsAffected == 0 {
+		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
 	}
 
 	return fmt.Sprintf("address successfully updated with id: %s", id), nil
@@ -257,9 +299,24 @@ func Update(c *gofr.Context) (any, error) {
 func Delete(c *gofr.Context) (any, error) {
 	id := c.PathParam("id")
 
-	_, err := c.SQL.ExecContext(c, `DELETE FROM addresses WHERE id = $1`, id)
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"token"}}
+	}
+
+	result, err := c.SQL.ExecContext(c,
+		`DELETE FROM addresses WHERE id = $1 AND road_id IN (SELECT id FROM road WHERE m_id = $2)`, id, claims.MId)
 	if err != nil {
 		return nil, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+
+	if rowsAffected == 0 {
+		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
 	}
 
 	return fmt.Sprintf("address successfully deleted with id: %s", id), nil

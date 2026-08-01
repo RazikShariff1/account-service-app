@@ -107,10 +107,17 @@ func validateMId(c *gofr.Context, v *Road) error {
 }
 
 func Create(c *gofr.Context) (any, error) {
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"token"}}
+	}
+
 	var v Road
 	if err := c.Bind(&v); err != nil {
 		return nil, err
 	}
+
+	v.MId = claims.MId
 
 	if err := validate(&v); err != nil {
 		return nil, err
@@ -213,6 +220,8 @@ func Update(c *gofr.Context) (any, error) {
 	if err := c.Bind(&v); err != nil {
 		return nil, err
 	}
+
+	v.MId = claims.MId
 
 	if err := validate(&v); err != nil {
 		return nil, err
