@@ -3,13 +3,18 @@ package address
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/lib/pq"
 
 	"gofr.dev/pkg/gofr"
 	gofrHTTP "gofr.dev/pkg/gofr/http"
+
+	"main/middleware"
+	"main/road"
 )
 
 // querier is satisfied by both c.SQL and a *sql.Tx, so GetByID can run
@@ -115,6 +120,25 @@ func validate(v *AddressRequest) error {
 	return nil
 }
 
+// validateRoadId confirms roadID exists and belongs to the caller's own masjid,
+// so a caller can't attach an address to a road outside their claimed scope.
+func validateRoadId(c *gofr.Context, mId, roadId int) error {
+	r, err := road.GetByID(c, c.SQL, strconv.Itoa(roadId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return gofrHTTP.ErrorInvalidParam{Params: []string{"road_id"}}
+		}
+
+		return err
+	}
+
+	if r.MId != mId {
+		return gofrHTTP.ErrorInvalidParam{Params: []string{"road_id"}}
+	}
+
+	return nil
+}
+
 func scanAddress(row interface{ Scan(...any) error }) (AddressResponse, error) {
 	var v AddressResponse
 
@@ -131,6 +155,15 @@ func Create(c *gofr.Context) (any, error) {
 	}
 
 	if err := validate(&v); err != nil {
+		return nil, err
+	}
+
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"token"}}
+	}
+
+	if err := validateRoadId(c, claims.MId, v.RoadId); err != nil {
 		return nil, err
 	}
 
@@ -198,6 +231,15 @@ func Update(c *gofr.Context) (any, error) {
 	}
 
 	if err := validate(&v); err != nil {
+		return nil, err
+	}
+
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"token"}}
+	}
+
+	if err := validateRoadId(c, claims.MId, v.RoadId); err != nil {
 		return nil, err
 	}
 

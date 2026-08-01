@@ -72,25 +72,35 @@ func Create(c *gofr.Context) (any, error) {
 		return nil, gofrHTTP.ErrorMissingParam{Params: []string{"log_name"}}
 	}
 
+	return Record(c, req.IndividualId, &claims.AId, req.LogName, req.OldValue, req.NewValue, req.Notes)
+}
+
+// Record inserts a single activity log entry. It is shared by the HTTP Create
+// handler above and by other packages that need to log an event as a side
+// effect of their own operation (e.g. individuals.Create logging the
+// individual's creation) without going through the HTTP layer.
+func Record(
+	ctx *gofr.Context, individualID int, accountID *int, logName string, oldValue, newValue json.RawMessage, notes string,
+) (*Log, error) {
 	log := Log{
-		IndividualId: req.IndividualId,
-		AccountId:    &claims.AId,
-		LogName:      req.LogName,
-		OldValue:     req.OldValue,
-		NewValue:     req.NewValue,
-		Notes:        req.Notes,
+		IndividualId: individualID,
+		AccountId:    accountID,
+		LogName:      logName,
+		OldValue:     oldValue,
+		NewValue:     newValue,
+		Notes:        notes,
 	}
 
-	err := secondarydb.DB.QueryRowContext(c,
+	err := secondarydb.DB.QueryRowContext(ctx,
 		`INSERT INTO activity_logs (individual_id, account_id, log_name, old_value, new_value, notes)
 		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at`,
-		log.IndividualId, claims.AId, log.LogName, rawOrNil(log.OldValue), rawOrNil(log.NewValue), stringOrNil(log.Notes)).
+		log.IndividualId, accountID, log.LogName, rawOrNil(log.OldValue), rawOrNil(log.NewValue), stringOrNil(log.Notes)).
 		Scan(&log.Id, &log.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 
-	return log, nil
+	return &log, nil
 }
 
 func rawOrNil(raw json.RawMessage) any {

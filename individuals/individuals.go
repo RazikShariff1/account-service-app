@@ -14,6 +14,7 @@ import (
 	gofrSQL "gofr.dev/pkg/gofr/datasource/sql"
 	gofrHTTP "gofr.dev/pkg/gofr/http"
 
+	"main/activity"
 	"main/middleware"
 	"main/secondarydb"
 )
@@ -250,6 +251,11 @@ func validateReferenceIDs(c *gofr.Context, req *IndividualRequest) error {
 }
 
 func Create(c *gofr.Context) (any, error) {
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, ErrUnauthorized{}
+	}
+
 	var req IndividualRequest
 
 	if err := c.Bind(&req); err != nil {
@@ -275,7 +281,21 @@ RETURNING id`
 		return nil, mapSQLError(err)
 	}
 
-	return getIndividualByID(c, strconv.Itoa(id), req.MId)
+	resp, err := getIndividualByID(c, strconv.Itoa(id), req.MId)
+	if err != nil {
+		return nil, err
+	}
+
+	newValue, err := json.Marshal(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := activity.Record(c, id, &claims.AId, "individual_created", nil, newValue, ""); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
 }
 
 func validate(c *gofr.Context, req *IndividualRequest) error {
