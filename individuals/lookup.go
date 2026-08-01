@@ -10,7 +10,6 @@ import (
 	"gofr.dev/pkg/gofr"
 	gofrSQL "gofr.dev/pkg/gofr/datasource/sql"
 
-	"main/address"
 	"main/h"
 	"main/m"
 	"main/road"
@@ -57,35 +56,6 @@ func fetchRoad(ctx context.Context, tx *gofrSQL.Tx, id int) (*Road, error) {
 	return &Road{Id: v.Id, Name: v.Name}, nil
 }
 
-func fetchAddress(ctx context.Context, tx *gofrSQL.Tx, id int) (*Address, error) {
-	v, err := address.GetByID(ctx, tx, strconv.Itoa(id))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, errReferenceNotFound
-		}
-
-		return nil, err
-	}
-
-	r, err := fetchRoad(ctx, tx, v.RoadId)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Address{
-		Id:        v.Id,
-		Road:      *r,
-		DoorNo:    v.DoorNo,
-		Landmark:  v.Landmark,
-		City:      v.City,
-		State:     v.State,
-		Pincode:   v.Pincode,
-		Country:   v.Country,
-		Latitude:  v.Latitude,
-		Longitude: v.Longitude,
-	}, nil
-}
-
 // withPrimaryTx runs fn against a fresh transaction on the primary db,
 // committing on success and rolling back on error.
 //
@@ -115,9 +85,9 @@ type querier interface {
 	Begin() (*gofrSQL.Tx, error)
 }
 
-// enrichIndividual resolves the h_id/m_id/r_id/address_id already scanned onto
-// resp.{Halqa,Masjid,Road,Address}.Id against the primary account-service
-// tables, all within one transaction (see withPrimaryTx).
+// enrichIndividual resolves the h_id/m_id/r_id already scanned onto
+// resp.{Halqa,Masjid,Road}.Id against the primary account-service tables,
+// all within one transaction (see withPrimaryTx).
 func enrichIndividual(c *gofr.Context, resp *IndividualResponse) error {
 	return withPrimaryTx(c.SQL, func(tx *gofrSQL.Tx) error {
 		halqa, err := fetchHalqa(c, tx, resp.Halqa.Id)
@@ -140,13 +110,6 @@ func enrichIndividual(c *gofr.Context, resp *IndividualResponse) error {
 		}
 
 		resp.Road = *rd
-
-		addr, err := fetchAddress(c, tx, resp.Address.Id)
-		if err != nil {
-			return err
-		}
-
-		resp.Address = *addr
 
 		return nil
 	})
@@ -182,13 +145,11 @@ func enrichIndividuals(c *gofr.Context, list []*IndividualResponse) error {
 		hIDs := make([]int, len(list))
 		mIDs := make([]int, len(list))
 		rIDs := make([]int, len(list))
-		aIDs := make([]int, len(list))
 
 		for i, ind := range list {
 			hIDs[i] = ind.Halqa.Id
 			mIDs[i] = ind.Masjid.Id
 			rIDs[i] = ind.Road.Id
-			aIDs[i] = ind.Address.Id
 		}
 
 		hs, err := h.GetByIDs(tx, uniqueInts(hIDs))
@@ -221,48 +182,6 @@ func enrichIndividuals(c *gofr.Context, list []*IndividualResponse) error {
 			roadByID[v.Id] = Road{Id: v.Id, Name: v.Name}
 		}
 
-		addrs, err := address.GetByIDs(tx, uniqueInts(aIDs))
-		if err != nil {
-			return err
-		}
-
-		// Addresses reference their own road_id, which may not overlap with
-		// rIDs above — fetch whatever's missing.
-		var missingRoadIDs []int
-
-		for _, a := range addrs {
-			if _, ok := roadByID[a.RoadId]; !ok {
-				missingRoadIDs = append(missingRoadIDs, a.RoadId)
-			}
-		}
-
-		if len(missingRoadIDs) > 0 {
-			more, err := road.GetByIDs(tx, uniqueInts(missingRoadIDs))
-			if err != nil {
-				return err
-			}
-
-			for _, v := range more {
-				roadByID[v.Id] = Road{Id: v.Id, Name: v.Name}
-			}
-		}
-
-		addressByID := make(map[int]Address, len(addrs))
-		for _, a := range addrs {
-			addressByID[a.Id] = Address{
-				Id:        a.Id,
-				Road:      roadByID[a.RoadId],
-				DoorNo:    a.DoorNo,
-				Landmark:  a.Landmark,
-				City:      a.City,
-				State:     a.State,
-				Pincode:   a.Pincode,
-				Country:   a.Country,
-				Latitude:  a.Latitude,
-				Longitude: a.Longitude,
-			}
-		}
-
 		for _, ind := range list {
 			halqa, ok := halqaByID[ind.Halqa.Id]
 			if !ok {
@@ -284,13 +203,6 @@ func enrichIndividuals(c *gofr.Context, list []*IndividualResponse) error {
 			}
 
 			ind.Road = rd
-
-			addr, ok := addressByID[ind.Address.Id]
-			if !ok {
-				return fmt.Errorf("individuals: address_id %d not found", ind.Address.Id)
-			}
-
-			ind.Address = addr
 		}
 
 		return nil

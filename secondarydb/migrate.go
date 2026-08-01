@@ -24,8 +24,12 @@ const createIndividualsTable = `CREATE TABLE IF NOT EXISTS individuals (
     h_id int NOT NULL ,
     m_id int NOT NULL ,
     r_id int NOT NULL ,
-    address_id int NOT NULL,
+    latitude double precision default null,
+    longitude double precision default null,
+    address_detail varchar(255) default null,
     email varchar(100) unique default null,
+    email_status boolean NOT NULL default false,
+    phone_status boolean NOT NULL default false,
     profession_type_id int NOT NULL REFERENCES profession_types(id),
     profession_status int NOT NULL,
     meta_data jsonb default null,
@@ -84,6 +88,14 @@ const dropActivityLogsAccountDetails = `ALTER TABLE activity_logs DROP COLUMN IF
 // omit it entirely, in which case it's stored as NULL rather than an empty string.
 const addActivityLogsNotes = `ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS notes text;`
 
+// addIndividualsVerificationStatus adds email_status/phone_status flags for
+// installs that predate them — createIndividualsTable already creates them
+// on fresh installs, so this is a no-op there.
+const addIndividualsVerificationStatus = `
+ALTER TABLE individuals
+	ADD COLUMN IF NOT EXISTS email_status boolean NOT NULL default false,
+	ADD COLUMN IF NOT EXISTS phone_status boolean NOT NULL default false;`
+
 // Migrate creates the professions, profession_types, individuals and
 // activity_logs tables in the secondary database if they don't already
 // exist, and migrates individuals off its old profession_id column.
@@ -117,6 +129,10 @@ func Migrate() error {
 	}
 
 	if _, err := DB.Exec(addActivityLogsNotes); err != nil {
+		return err
+	}
+
+	if _, err := DB.Exec(addIndividualsVerificationStatus); err != nil {
 		return err
 	}
 

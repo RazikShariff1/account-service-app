@@ -36,8 +36,12 @@ type IndividualRequest struct {
 	HId              int             `json:"h_id"`
 	MId              int             `json:"m_id"`
 	RId              int             `json:"r_id"`
-	AddressId        int             `json:"address_id"`
+	Latitude         *float64        `json:"latitude"`
+	Longitude        *float64        `json:"longitude"`
+	AddressDetail    *string         `json:"address_detail"`
 	Email            *string         `json:"email"`
+	EmailStatus      bool            `json:"email_status"`
+	PhoneStatus      bool            `json:"phone_status"`
 	ProfessionTypeId int             `json:"profession_type_id"`
 	ProfessionStatus int             `json:"profession_status"`
 	MetaData         json.RawMessage `json:"meta_data"`
@@ -55,6 +59,8 @@ type IndividualResponse struct {
 	Name             string          `json:"name"`
 	Phone            *string         `json:"phone"`
 	Email            *string         `json:"email"`
+	EmailStatus      bool            `json:"email_status"`
+	PhoneStatus      bool            `json:"phone_status"`
 	ProfessionStatus int             `json:"profession_status"`
 	Img              *string         `json:"img"`
 	MetaData         json.RawMessage `json:"meta_data"`
@@ -65,7 +71,9 @@ type IndividualResponse struct {
 	Masjid           Masjid          `json:"masjid"`
 	Road             Road            `json:"road"`
 	Profession       Profession      `json:"profession"`
-	Address          Address         `json:"address"`
+	Latitude         *float64        `json:"latitude"`
+	Longitude        *float64        `json:"longitude"`
+	AddressDetail    *string         `json:"address_detail"`
 }
 
 type Halqa struct {
@@ -94,19 +102,6 @@ type Profession struct {
 	ProfessionType ProfessionType `json:"profession_type"`
 }
 
-type Address struct {
-	Id        int      `json:"id"`
-	Road      Road     `json:"road"`
-	DoorNo    *string  `json:"door_no"`
-	Landmark  *string  `json:"landmark"`
-	City      string   `json:"city"`
-	State     string   `json:"state"`
-	Pincode   *string  `json:"pincode"`
-	Country   string   `json:"country"`
-	Latitude  *float64 `json:"latitude"`
-	Longitude *float64 `json:"longitude"`
-}
-
 type Filter struct {
 	H_id           int    `json:"h_id"`
 	Name           string `json:"name"`
@@ -117,9 +112,9 @@ type Filter struct {
 
 const selectIndividualQuery = `
 SELECT
-    i.id, i.name, i.phone, i.email, i.profession_status, i.img, i.meta_data,
+    i.id, i.name, i.phone, i.email, i.email_status, i.phone_status, i.profession_status, i.img, i.meta_data,
     i.created_at, i.updated_at, i.last_met_at,
-    i.h_id, i.m_id, i.r_id, i.address_id,
+    i.h_id, i.m_id, i.r_id, i.latitude, i.longitude, i.address_detail,
     pt.id, pt.name, p.id, p.name
 FROM individuals i
 JOIN profession_types pt ON pt.id = i.profession_type_id
@@ -133,16 +128,18 @@ type rowScanner interface {
 
 func scanIndividual(row rowScanner) (*IndividualResponse, error) {
 	var (
-		resp              IndividualResponse
-		phone, email, img sql.NullString
-		lastMetAt         sql.NullTime
-		metaData          []byte
+		resp                IndividualResponse
+		phone, email, img   sql.NullString
+		lastMetAt           sql.NullTime
+		metaData            []byte
+		latitude, longitude sql.NullFloat64
+		addressDetail       sql.NullString
 	)
 
 	err := row.Scan(
-		&resp.Id, &resp.Name, &phone, &email, &resp.ProfessionStatus, &img, &metaData,
+		&resp.Id, &resp.Name, &phone, &email, &resp.EmailStatus, &resp.PhoneStatus, &resp.ProfessionStatus, &img, &metaData,
 		&resp.CreatedAt, &resp.UpdatedAt, &lastMetAt,
-		&resp.Halqa.Id, &resp.Masjid.Id, &resp.Road.Id, &resp.Address.Id,
+		&resp.Halqa.Id, &resp.Masjid.Id, &resp.Road.Id, &latitude, &longitude, &addressDetail,
 		&resp.Profession.ProfessionType.Id, &resp.Profession.ProfessionType.Name, &resp.Profession.Id, &resp.Profession.Name,
 	)
 	if err != nil {
@@ -167,6 +164,18 @@ func scanIndividual(row rowScanner) (*IndividualResponse, error) {
 
 	if lastMetAt.Valid {
 		resp.LastMetAt = &lastMetAt.Time
+	}
+
+	if latitude.Valid {
+		resp.Latitude = &latitude.Float64
+	}
+
+	if longitude.Valid {
+		resp.Longitude = &longitude.Float64
+	}
+
+	if addressDetail.Valid {
+		resp.AddressDetail = &addressDetail.String
 	}
 
 	return &resp, nil
@@ -223,7 +232,6 @@ func validateReferenceIDs(c *gofr.Context, req *IndividualRequest) error {
 			{"h_id", func() error { _, err := fetchHalqa(c, tx, req.HId); return err }},
 			{"m_id", func() error { _, err := fetchMasjid(c, tx, req.MId); return err }},
 			{"r_id", func() error { _, err := fetchRoad(c, tx, req.RId); return err }},
-			{"address_id", func() error { _, err := fetchAddress(c, tx, req.AddressId); return err }},
 		}
 
 		for _, chk := range checks {
@@ -270,15 +278,15 @@ func Create(c *gofr.Context) (any, error) {
 	}
 
 	const insertQuery = `
-INSERT INTO individuals (name, phone, h_id, m_id, r_id, address_id, email, profession_type_id, profession_status, meta_data, img)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+INSERT INTO individuals (name, phone, h_id, m_id, r_id, latitude, longitude, address_detail, email, email_status, phone_status, profession_type_id, profession_status, meta_data, img)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 RETURNING id`
 
 	var id int
 
 	err := secondarydb.DB.QueryRowContext(c, insertQuery,
-		req.Name, req.Phone, req.HId, req.MId, req.RId, req.AddressId, req.Email,
-		req.ProfessionTypeId, req.ProfessionStatus, req.MetaData, req.Img,
+		req.Name, req.Phone, req.HId, req.MId, req.RId, req.Latitude, req.Longitude, req.AddressDetail, req.Email,
+		req.EmailStatus, req.PhoneStatus, req.ProfessionTypeId, req.ProfessionStatus, req.MetaData, req.Img,
 	).Scan(&id)
 	if err != nil {
 		return nil, mapSQLError(err)
@@ -463,13 +471,13 @@ func Update(c *gofr.Context) (any, error) {
 
 	const updateQuery = `
 UPDATE individuals
-SET name = $1, phone = $2, h_id = $3, m_id = $4, r_id = $5, address_id = $6, email = $7,
-    profession_type_id = $8, profession_status = $9, meta_data = $10, img = $11, updated_at = now()
-WHERE id = $12 AND m_id = $13 AND deleted_at IS NULL`
+SET name = $1, phone = $2, h_id = $3, m_id = $4, r_id = $5, latitude = $6, longitude = $7, address_detail = $8, email = $9,
+    email_status = $10, phone_status = $11, profession_type_id = $12, profession_status = $13, meta_data = $14, img = $15, updated_at = now()
+WHERE id = $16 AND m_id = $17 AND deleted_at IS NULL`
 
 	result, err := secondarydb.DB.ExecContext(c, updateQuery,
-		req.Name, req.Phone, req.HId, req.MId, req.RId, req.AddressId, req.Email,
-		req.ProfessionTypeId, req.ProfessionStatus, req.MetaData, req.Img, id, claims.MId,
+		req.Name, req.Phone, req.HId, req.MId, req.RId, req.Latitude, req.Longitude, req.AddressDetail, req.Email,
+		req.EmailStatus, req.PhoneStatus, req.ProfessionTypeId, req.ProfessionStatus, req.MetaData, req.Img, id, claims.MId,
 	)
 	if err != nil {
 		return nil, mapSQLError(err)
