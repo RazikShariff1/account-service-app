@@ -29,6 +29,10 @@ func main() {
 		app.Logger().Fatalf("failed to migrate secondary db: %v", err)
 	}
 
+	if err := migrations.MigrateIndividualsAddressData(); err != nil {
+		app.Logger().Fatalf("failed to migrate individuals address data: %v", err)
+	}
+
 	app.Migrate(migrations.All())
 
 	app.UseMiddleware(middleware.Auth())
