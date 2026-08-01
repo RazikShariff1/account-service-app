@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 
 	"gofr.dev/pkg/gofr"
@@ -22,6 +23,37 @@ import (
 )
 
 const minPasswordLength = 8
+
+// multiQuerier is satisfied by both c.SQL and a *sql.Tx (gofr's Tx only
+// exposes a context-less Query, unlike its QueryRowContext).
+type multiQuerier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// GetByIDs looks up several accounts by id in a single round trip, for
+// callers (e.g. individuals' activity log) that need to resolve an
+// account_id to a display name.
+func GetByIDs(db multiQuerier, ids []int) ([]Account, error) {
+	rows, err := db.Query(`SELECT id, name FROM accounts WHERE id = ANY($1)`, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []Account
+
+	for rows.Next() {
+		var acc Account
+
+		if err := rows.Scan(&acc.Id, &acc.Name); err != nil {
+			return nil, err
+		}
+
+		result = append(result, acc)
+	}
+
+	return result, rows.Err()
+}
 
 type Account struct {
 	Id           int    `json:"id" sql:"auto_increment"`

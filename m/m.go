@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -15,6 +16,11 @@ import (
 
 	"main/h"
 )
+
+func isUniqueViolation(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique constraint") || strings.Contains(msg, "duplicate")
+}
 
 // selectColumns is shared by every read query. h_id is nullable (a masjid
 // need not belong to a halqa), so it's coalesced to 0 rather than scanned
@@ -133,6 +139,10 @@ func Create(c *gofr.Context) (any, error) {
 		`INSERT INTO m (name, created_at, updated_at, status, h_id) VALUES ($1, $2, $3, $4, NULLIF($5, 0)) RETURNING id`,
 		v.Name, v.CreatedAt, v.UpdatedAt, v.Status, v.HId).Scan(&v.Id)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, gofrHTTP.ErrorEntityAlreadyExist{}
+		}
+
 		return nil, err
 	}
 

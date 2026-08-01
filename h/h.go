@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -12,6 +13,11 @@ import (
 	"gofr.dev/pkg/gofr"
 	gofrHTTP "gofr.dev/pkg/gofr/http"
 )
+
+func isUniqueViolation(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique constraint") || strings.Contains(msg, "duplicate")
+}
 
 // querier is satisfied by both c.SQL and a *sql.Tx, so GetByID can run
 // either directly or as part of a caller-managed transaction.
@@ -101,6 +107,10 @@ func Create(c *gofr.Context) (any, error) {
 	err := c.SQL.QueryRowContext(c, `INSERT INTO h (name, created_at, updated_at, status) VALUES ($1, $2, $3, $4) RETURNING id`,
 		v.Name, v.CreatedAt, v.UpdatedAt, v.Status).Scan(&v.Id)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, gofrHTTP.ErrorEntityAlreadyExist{}
+		}
+
 		return nil, err
 	}
 
