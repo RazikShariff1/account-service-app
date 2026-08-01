@@ -80,6 +80,10 @@ const createActivityLogsTable = `CREATE TABLE IF NOT EXISTS activity_logs (
 // are now resolved at read time (see activity.GetAll) instead of persisted.
 const dropActivityLogsAccountDetails = `ALTER TABLE activity_logs DROP COLUMN IF EXISTS account_details;`
 
+// addActivityLogsNotes adds an optional free-text notes column — callers may
+// omit it entirely, in which case it's stored as NULL rather than an empty string.
+const addActivityLogsNotes = `ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS notes text;`
+
 // Migrate creates the professions, profession_types, individuals and
 // activity_logs tables in the secondary database if they don't already
 // exist, and migrates individuals off its old profession_id column.
@@ -109,6 +113,10 @@ func Migrate() error {
 	}
 
 	if _, err := DB.Exec(dropActivityLogsAccountDetails); err != nil {
+		return err
+	}
+
+	if _, err := DB.Exec(addActivityLogsNotes); err != nil {
 		return err
 	}
 

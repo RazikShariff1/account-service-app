@@ -30,6 +30,7 @@ type createRequest struct {
 	LogName      string          `json:"log_name"`
 	OldValue     json.RawMessage `json:"old_value"`
 	NewValue     json.RawMessage `json:"new_value"`
+	Notes        string          `json:"notes"`
 }
 
 // Log is a single activity log entry. OldValue/NewValue are free-form JSON —
@@ -44,6 +45,7 @@ type Log struct {
 	LogName        string            `json:"log_name"`
 	OldValue       json.RawMessage   `json:"old_value,omitempty"`
 	NewValue       json.RawMessage   `json:"new_value,omitempty"`
+	Notes          string            `json:"notes,omitempty"`
 	CreatedAt      time.Time         `json:"created_at"`
 }
 
@@ -76,12 +78,13 @@ func Create(c *gofr.Context) (any, error) {
 		LogName:      req.LogName,
 		OldValue:     req.OldValue,
 		NewValue:     req.NewValue,
+		Notes:        req.Notes,
 	}
 
 	err := secondarydb.DB.QueryRowContext(c,
-		`INSERT INTO activity_logs (individual_id, account_id, log_name, old_value, new_value)
-		VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at`,
-		log.IndividualId, claims.AId, log.LogName, rawOrNil(log.OldValue), rawOrNil(log.NewValue)).
+		`INSERT INTO activity_logs (individual_id, account_id, log_name, old_value, new_value, notes)
+		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at`,
+		log.IndividualId, claims.AId, log.LogName, rawOrNil(log.OldValue), rawOrNil(log.NewValue), stringOrNil(log.Notes)).
 		Scan(&log.Id, &log.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -96,6 +99,14 @@ func rawOrNil(raw json.RawMessage) any {
 	}
 
 	return []byte(raw)
+}
+
+func stringOrNil(s string) any {
+	if s == "" {
+		return nil
+	}
+
+	return s
 }
 
 // GetAll returns every activity log entry for the individual given by the
@@ -113,7 +124,7 @@ func GetAll(c *gofr.Context) (any, error) {
 	}
 
 	rows, err := secondarydb.DB.QueryContext(c,
-		`SELECT id, individual_id, account_id, log_name, old_value, new_value, created_at
+		`SELECT id, individual_id, account_id, log_name, old_value, new_value, notes, created_at
 		FROM activity_logs WHERE individual_id = $1 ORDER BY created_at DESC`, individualID)
 	if err != nil {
 		return nil, err
@@ -130,10 +141,15 @@ func GetAll(c *gofr.Context) (any, error) {
 			l                  Log
 			accountID          *int
 			oldValue, newValue []byte
+			notes              *string
 		)
 
-		if err := rows.Scan(&l.Id, &l.IndividualId, &accountID, &l.LogName, &oldValue, &newValue, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.Id, &l.IndividualId, &accountID, &l.LogName, &oldValue, &newValue, &notes, &l.CreatedAt); err != nil {
 			return nil, err
+		}
+
+		if notes != nil {
+			l.Notes = *notes
 		}
 
 		l.AccountId = accountID
