@@ -10,7 +10,9 @@ import (
 
 const tokenTTL = time.Hour
 
-var ErrInvalidToken = errors.New("invalid or expired token")
+var ErrInvalidToken = errors.New("invalid token")
+
+var ErrExpiredToken = errors.New("token is expired")
 
 // secretKey is read from JWT_SECRET so it can be overridden outside of tests;
 // falls back to a fixed dev value since there's no real secret store yet.
@@ -19,7 +21,7 @@ func secretKey() []byte {
 		return []byte(s)
 	}
 
-	return []byte("dev-secret-change-me")
+	return []byte("students_professionals")
 }
 
 type Claims struct {
@@ -57,7 +59,15 @@ func Parse(tokenString string) (*Claims, error) {
 
 		return secretKey(), nil
 	})
-	if err != nil || !token.Valid {
+	if err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return nil, ErrExpiredToken
+		}
+
+		return nil, ErrInvalidToken
+	}
+
+	if !token.Valid {
 		return nil, ErrInvalidToken
 	}
 

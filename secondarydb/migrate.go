@@ -60,19 +60,28 @@ END $$;`
 // createActivityLogsTable stores a free-form audit trail against an
 // individual: log_name identifies the kind of event (e.g. "city_updated",
 // "profile_created") and old_value/new_value hold whatever JSON shape the
-// caller wants to record for that event. account_id is nullable since some
-// events (e.g. system-generated ones) have no acting account, and it isn't a
-// foreign key: accounts lives in the primary database, not this one, so
-// resolving it to a name is done in application code, not via SQL join.
+// caller wants to record for that event. account_id/account_details are
+// nullable since some events (e.g. system-generated ones) have no acting
+// account. account_id isn't a foreign key — accounts lives in the primary
+// database, not this one — and account_details is a full snapshot of the
+// acting account (everything but its password hash) captured at write time
+// in Create, not a live join, so a log entry keeps showing the account as it
+// was when the action happened even if the account is later renamed,
+// reassigned, or deleted.
 const createActivityLogsTable = `CREATE TABLE IF NOT EXISTS activity_logs (
     id serial PRIMARY KEY,
     individual_id int NOT NULL REFERENCES individuals(id),
     account_id int,
+    account_details jsonb,
     log_name varchar(100) NOT NULL,
     old_value jsonb,
     new_value jsonb,
     created_at timestamp NOT NULL DEFAULT now()
 );`
+
+// addActivityLogsAccountDetails adds account_details to installs that
+// already had activity_logs from before this column existed.
+const addActivityLogsAccountDetails = `ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS account_details jsonb;`
 
 // Migrate creates the professions, profession_types, individuals and
 // activity_logs tables in the secondary database if they don't already
@@ -99,6 +108,10 @@ func Migrate() error {
 	}
 
 	if _, err := DB.Exec(createActivityLogsTable); err != nil {
+		return err
+	}
+
+	if _, err := DB.Exec(addActivityLogsAccountDetails); err != nil {
 		return err
 	}
 

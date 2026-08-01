@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -42,6 +43,12 @@ func isPublicResource(r *http.Request) bool {
 	return false
 }
 
+func writeAuthError(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	w.Write([]byte(`{"error":{"message":"` + message + `"}}`))
+}
+
 func Auth() gofrHTTP.Middleware {
 	return func(inner http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -54,13 +61,18 @@ func Auth() gofrHTTP.Middleware {
 
 			token, ok := strings.CutPrefix(authHeader, "Bearer ")
 			if !ok || token == "" {
-				http.Error(w, `{"error":"missing or malformed Authorization header"}`, http.StatusUnauthorized)
+				writeAuthError(w, "missing or malformed Authorization header")
 				return
 			}
 
 			claims, err := jwt.Parse(token)
 			if err != nil {
-				http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
+				if errors.Is(err, jwt.ErrExpiredToken) {
+					writeAuthError(w, "token expired")
+					return
+				}
+
+				writeAuthError(w, "invalid token")
 				return
 			}
 

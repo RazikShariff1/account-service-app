@@ -31,10 +31,12 @@ type multiQuerier interface {
 }
 
 // GetByIDs looks up several accounts by id in a single round trip, for
-// callers (e.g. individuals' activity log) that need to resolve an
-// account_id to a display name.
+// callers (e.g. individuals' activity log) that need the acting account's
+// full details, not just its id. Password/PasswordHash are never populated.
 func GetByIDs(db multiQuerier, ids []int) ([]Account, error) {
-	rows, err := db.Query(`SELECT id, name FROM accounts WHERE id = ANY($1)`, pq.Array(ids))
+	rows, err := db.Query(
+		`SELECT id, email, name, phone_number, status, h_id, m_id, created_at, updated_at
+		FROM accounts WHERE id = ANY($1)`, pq.Array(ids))
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +47,8 @@ func GetByIDs(db multiQuerier, ids []int) ([]Account, error) {
 	for rows.Next() {
 		var acc Account
 
-		if err := rows.Scan(&acc.Id, &acc.Name); err != nil {
+		if err := rows.Scan(&acc.Id, &acc.Email, &acc.Name, &acc.PhoneNumber,
+			&acc.Status, &acc.HId, &acc.MId, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
 			return nil, err
 		}
 
