@@ -3,14 +3,24 @@ package m
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/lib/pq"
 
 	"gofr.dev/pkg/gofr"
 	gofrHTTP "gofr.dev/pkg/gofr/http"
+
+	"main/h"
 )
+
+// selectColumns is shared by every read query. h_id is nullable (a masjid
+// need not belong to a halqa), so it's coalesced to 0 rather than scanned
+// into a nullable type — callers treat 0 as "unset", same as HId elsewhere
+// in this codebase.
+const selectColumns = `id, name, created_at, updated_at, status, COALESCE(h_id, 0)`
 
 // querier is satisfied by both c.SQL and a *sql.Tx, so GetByID can run
 // either directly or as part of a caller-managed transaction.
@@ -28,7 +38,7 @@ type multiQuerier interface {
 // (e.g. individuals' list enrichment) that would otherwise issue one
 // GetByID call per row.
 func GetByIDs(db multiQuerier, ids []int) ([]M, error) {
-	rows, err := db.Query(`SELECT id, name, created_at, updated_at, status FROM m WHERE id = ANY($1)`, pq.Array(ids))
+	rows, err := db.Query(`SELECT `+selectColumns+` FROM m WHERE id = ANY($1)`, pq.Array(ids))
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +49,7 @@ func GetByIDs(db multiQuerier, ids []int) ([]M, error) {
 	for rows.Next() {
 		var v M
 
-		if err := rows.Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status); err != nil {
+		if err := rows.Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status, &v.HId); err != nil {
 			return nil, err
 		}
 
@@ -55,6 +65,7 @@ type M struct {
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 	Status    string `json:"status"`
+	HId       int    `json:"h_id"`
 }
 
 func RegisterRoutes(a *gofr.App) {
@@ -83,6 +94,23 @@ func validate(v *M) error {
 	return nil
 }
 
+// validateHId checks h_id against the h table, when set.
+func validateHId(c *gofr.Context, v *M) error {
+	if v.HId == 0 {
+		return nil
+	}
+
+	if _, err := h.GetByID(c, c.SQL, strconv.Itoa(v.HId)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return gofrHTTP.ErrorInvalidParam{Params: []string{"h_id"}}
+		}
+
+		return err
+	}
+
+	return nil
+}
+
 func Create(c *gofr.Context) (any, error) {
 	var v M
 	if err := c.Bind(&v); err != nil {
@@ -93,12 +121,17 @@ func Create(c *gofr.Context) (any, error) {
 		return nil, err
 	}
 
+	if err := validateHId(c, &v); err != nil {
+		return nil, err
+	}
+
 	now := time.Now().UTC().Format(time.RFC3339)
 	v.CreatedAt = now
 	v.UpdatedAt = now
 
-	err := c.SQL.QueryRowContext(c, `INSERT INTO m (name, created_at, updated_at, status) VALUES ($1, $2, $3, $4) RETURNING id`,
-		v.Name, v.CreatedAt, v.UpdatedAt, v.Status).Scan(&v.Id)
+	err := c.SQL.QueryRowContext(c,
+		`INSERT INTO m (name, created_at, updated_at, status, h_id) VALUES ($1, $2, $3, $4, NULLIF($5, 0)) RETURNING id`,
+		v.Name, v.CreatedAt, v.UpdatedAt, v.Status, v.HId).Scan(&v.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -106,8 +139,22 @@ func Create(c *gofr.Context) (any, error) {
 	return v, nil
 }
 
+// GetAll returns every masjid belonging to the given halqa. h_id is
+// mandatory — there's no route to list masjids across all halqas.
 func GetAll(c *gofr.Context) (any, error) {
-	rows, err := c.SQL.QueryContext(c, `SELECT id, name, created_at, updated_at, status FROM m`)
+	hID := c.Param("h_id")
+	if hID == "" {
+		return nil, gofrHTTP.ErrorMissingParam{Params: []string{"h_id"}}
+	}
+
+	v, err := strconv.Atoi(hID)
+	if err != nil {
+		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"h_id"}}
+	}
+
+	query := `SELECT ` + selectColumns + ` FROM m WHERE h_id = $1`
+
+	rows, err := c.SQL.QueryContext(c, query, v)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +165,7 @@ func GetAll(c *gofr.Context) (any, error) {
 	for rows.Next() {
 		var v M
 
-		if err := rows.Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status); err != nil {
+		if err := rows.Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status, &v.HId); err != nil {
 			return nil, err
 		}
 
@@ -137,8 +184,8 @@ func GetAll(c *gofr.Context) (any, error) {
 func GetByID(ctx context.Context, db querier, id string) (*M, error) {
 	var v M
 
-	err := db.QueryRowContext(ctx, `SELECT id, name, created_at, updated_at, status FROM m WHERE id = $1`, id).
-		Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status)
+	err := db.QueryRowContext(ctx, `SELECT `+selectColumns+` FROM m WHERE id = $1`, id).
+		Scan(&v.Id, &v.Name, &v.CreatedAt, &v.UpdatedAt, &v.Status, &v.HId)
 	if err != nil {
 		return nil, err
 	}
@@ -162,10 +209,15 @@ func Update(c *gofr.Context) (any, error) {
 		return nil, err
 	}
 
+	if err := validateHId(c, &v); err != nil {
+		return nil, err
+	}
+
 	v.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
-	_, err := c.SQL.ExecContext(c, `UPDATE m SET name = $1, updated_at = $2, status = $3 WHERE id = $4`,
-		v.Name, v.UpdatedAt, v.Status, id)
+	_, err := c.SQL.ExecContext(c,
+		`UPDATE m SET name = $1, updated_at = $2, status = $3, h_id = NULLIF($4, 0) WHERE id = $5`,
+		v.Name, v.UpdatedAt, v.Status, v.HId, id)
 	if err != nil {
 		return nil, err
 	}

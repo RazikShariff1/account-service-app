@@ -14,7 +14,7 @@ type contextKey string
 
 const ClaimsContextKey contextKey = "claims"
 
-// publicPaths bypass JWT validation entirely.
+// publicPaths bypass JWT validation entirely, regardless of method.
 var publicPaths = map[string]bool{
 	"/login":              true,
 	"/signup":             true,
@@ -22,10 +22,30 @@ var publicPaths = map[string]bool{
 	"/.well-known/alive":  true,
 }
 
+// publicReadPrefixes bypass JWT validation for GET requests only, so
+// reference data (halqas, masjids) can be listed before a caller has a
+// token — e.g. to populate a signup form — while create/update/delete on
+// the same resources still require auth.
+var publicReadPrefixes = []string{"/m", "/h"}
+
+func isPublicRead(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+
+	for _, prefix := range publicReadPrefixes {
+		if r.URL.Path == prefix || strings.HasPrefix(r.URL.Path, prefix+"/") {
+			return true
+		}
+	}
+
+	return false
+}
+
 func Auth() gofrHTTP.Middleware {
 	return func(inner http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if publicPaths[r.URL.Path] {
+			if publicPaths[r.URL.Path] || isPublicRead(r) {
 				inner.ServeHTTP(w, r)
 				return
 			}
