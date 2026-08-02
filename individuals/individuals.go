@@ -55,25 +55,26 @@ type Pagination struct {
 }
 
 type IndividualResponse struct {
-	Id               int             `json:"id"`
-	Name             string          `json:"name"`
-	Phone            *string         `json:"phone"`
-	Email            *string         `json:"email"`
-	EmailStatus      bool            `json:"email_status"`
-	PhoneStatus      bool            `json:"phone_status"`
-	ProfessionStatus int             `json:"profession_status"`
-	Img              *string         `json:"img"`
-	MetaData         json.RawMessage `json:"meta_data"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
-	LastMetAt        *time.Time      `json:"last_met_at"`
-	Halqa            Halqa           `json:"halqa"`
-	Masjid           Masjid          `json:"masjid"`
-	Road             Road            `json:"road"`
-	Profession       Profession      `json:"profession"`
-	Latitude         *float64        `json:"latitude"`
-	Longitude        *float64        `json:"longitude"`
-	AddressDetail    *string         `json:"address_detail"`
+	Id                  int             `json:"id"`
+	Name                string          `json:"name"`
+	Phone               *string         `json:"phone"`
+	Email               *string         `json:"email"`
+	EmailStatus         bool            `json:"email_status"`
+	PhoneStatus         bool            `json:"phone_status"`
+	ProfessionStatus    int             `json:"profession_status"`
+	Img                 *string         `json:"img"`
+	MetaData            json.RawMessage `json:"meta_data"`
+	CreatedAt           time.Time       `json:"created_at"`
+	UpdatedAt           time.Time       `json:"updated_at"`
+	LastMetAt           *time.Time      `json:"last_met_at"`
+	ProfessionUpdatedAt *time.Time      `json:"profession_updated_at"`
+	Halqa               Halqa           `json:"halqa"`
+	Masjid              Masjid          `json:"masjid"`
+	Road                Road            `json:"road"`
+	Profession          Profession      `json:"profession"`
+	Latitude            *float64        `json:"latitude"`
+	Longitude           *float64        `json:"longitude"`
+	AddressDetail       *string         `json:"address_detail"`
 }
 
 type Halqa struct {
@@ -113,7 +114,7 @@ type Filter struct {
 const selectIndividualQuery = `
 SELECT
     i.id, i.name, i.phone, i.email, i.email_status, i.phone_status, i.profession_status, i.img, i.meta_data,
-    i.created_at, i.updated_at, i.last_met_at,
+    i.created_at, i.updated_at, i.last_met_at, i.profession_updated_at,
     i.h_id, i.m_id, i.r_id, i.latitude, i.longitude, i.address_detail,
     pt.id, pt.name, p.id, p.name
 FROM individuals i
@@ -131,6 +132,7 @@ func scanIndividual(row rowScanner) (*IndividualResponse, error) {
 		resp                IndividualResponse
 		phone, email, img   sql.NullString
 		lastMetAt           sql.NullTime
+		professionUpdatedAt sql.NullTime
 		metaData            []byte
 		latitude, longitude sql.NullFloat64
 		addressDetail       sql.NullString
@@ -138,7 +140,7 @@ func scanIndividual(row rowScanner) (*IndividualResponse, error) {
 
 	err := row.Scan(
 		&resp.Id, &resp.Name, &phone, &email, &resp.EmailStatus, &resp.PhoneStatus, &resp.ProfessionStatus, &img, &metaData,
-		&resp.CreatedAt, &resp.UpdatedAt, &lastMetAt,
+		&resp.CreatedAt, &resp.UpdatedAt, &lastMetAt, &professionUpdatedAt,
 		&resp.Halqa.Id, &resp.Masjid.Id, &resp.Road.Id, &latitude, &longitude, &addressDetail,
 		&resp.Profession.ProfessionType.Id, &resp.Profession.ProfessionType.Name, &resp.Profession.Id, &resp.Profession.Name,
 	)
@@ -164,6 +166,10 @@ func scanIndividual(row rowScanner) (*IndividualResponse, error) {
 
 	if lastMetAt.Valid {
 		resp.LastMetAt = &lastMetAt.Time
+	}
+
+	if professionUpdatedAt.Valid {
+		resp.ProfessionUpdatedAt = &professionUpdatedAt.Time
 	}
 
 	if latitude.Valid {
@@ -472,7 +478,9 @@ func Update(c *gofr.Context) (any, error) {
 	const updateQuery = `
 UPDATE individuals
 SET name = $1, phone = $2, h_id = $3, m_id = $4, r_id = $5, latitude = $6, longitude = $7, address_detail = $8, email = $9,
-    email_status = $10, phone_status = $11, profession_type_id = $12, profession_status = $13, meta_data = $14, img = $15, updated_at = now()
+    email_status = $10, phone_status = $11, profession_type_id = $12, profession_status = $13, meta_data = $14, img = $15,
+    profession_updated_at = CASE WHEN profession_type_id IS DISTINCT FROM $12 THEN now() ELSE profession_updated_at END,
+    updated_at = now()
 WHERE id = $16 AND m_id = $17 AND deleted_at IS NULL`
 
 	result, err := secondarydb.DB.ExecContext(c, updateQuery,

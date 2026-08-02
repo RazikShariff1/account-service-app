@@ -78,14 +78,6 @@ func validate(v *Road) error {
 		missing = append(missing, "name")
 	}
 
-	if v.Status == "" {
-		missing = append(missing, "status")
-	}
-
-	if v.MId == 0 {
-		missing = append(missing, "m_id")
-	}
-
 	if len(missing) > 0 {
 		return gofrHTTP.ErrorMissingParam{Params: missing}
 	}

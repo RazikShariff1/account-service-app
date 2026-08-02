@@ -79,6 +79,7 @@ func RegisterRoutes(a *gofr.App) {
 	a.GET("/accounts", GetAll)
 	a.GET("/accounts/{id}", Get)
 	a.PUT("/accounts/{id}", Update)
+	a.PUT("/accounts/{id}/email-status", EmailVerified)
 	a.DELETE("/accounts/{id}", Delete)
 }
 
@@ -437,6 +438,35 @@ func Update(c *gofr.Context) (any, error) {
 	}
 
 	return fmt.Sprintf("account successfully updated with id: %s", id), nil
+}
+
+// EmailVerified stamps email_status=true on an account once its owner has
+// confirmed their email address via the link sent by communication-svc.
+func EmailVerified(c *gofr.Context) (any, error) {
+	id := c.PathParam("id")
+
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, ErrUnauthorized{}
+	}
+
+	result, err := c.SQL.ExecContext(c,
+		`UPDATE accounts SET email_status = true, updated_at = $1 WHERE id = $2 AND m_id = $3`,
+		time.Now().UTC().Format(time.RFC3339), id, claims.MId)
+	if err != nil {
+		return nil, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+
+	if rowsAffected == 0 {
+		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
+	}
+
+	return Get(c)
 }
 
 func Delete(c *gofr.Context) (any, error) {

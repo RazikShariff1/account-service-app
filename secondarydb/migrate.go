@@ -37,6 +37,7 @@ const createIndividualsTable = `CREATE TABLE IF NOT EXISTS individuals (
     created_at timestamp default now(),
     updated_at timestamp default now(),
     last_met_at timestamp default null,
+    profession_updated_at timestamp default null,
     deleted_at timestamp default null
 );`
 
@@ -96,6 +97,13 @@ ALTER TABLE individuals
 	ADD COLUMN IF NOT EXISTS email_status boolean NOT NULL default false,
 	ADD COLUMN IF NOT EXISTS phone_status boolean NOT NULL default false;`
 
+// addIndividualsProfessionUpdatedAt adds a timestamp stamped whenever
+// profession_type_id changes, for installs that predate it —
+// createIndividualsTable already creates it on fresh installs, so this is a
+// no-op there.
+const addIndividualsProfessionUpdatedAt = `
+ALTER TABLE individuals ADD COLUMN IF NOT EXISTS profession_updated_at timestamp default null;`
+
 // Migrate creates the professions, profession_types, individuals and
 // activity_logs tables in the secondary database if they don't already
 // exist, and migrates individuals off its old profession_id column.
@@ -133,6 +141,10 @@ func Migrate() error {
 	}
 
 	if _, err := DB.Exec(addIndividualsVerificationStatus); err != nil {
+		return err
+	}
+
+	if _, err := DB.Exec(addIndividualsProfessionUpdatedAt); err != nil {
 		return err
 	}
 

@@ -17,5 +17,6 @@ func All() map[int64]migration.Migrate {
 		1722268809: addRoadMColumn(),
 		1722268810: addMHColumn(),
 		1722268811: addUniqueNameConstraints(),
+		1722268812: addAccountsVerificationStatus(),
 	}
 }
