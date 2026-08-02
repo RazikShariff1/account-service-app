@@ -530,6 +530,7 @@ func RegisterRoutes(a *gofr.App) {
 	a.GET("/individual/{id}", Get)
 	a.PUT("/individual/{id}", Update)
 	a.PUT("/individual/{id}/met", Met)
+	a.PUT("/individual/{id}/email-status", EmailVerified)
 	a.DELETE("/individual/{id}", Delete)
 }
 
@@ -545,6 +546,35 @@ func Met(c *gofr.Context) (any, error) {
 	const metQuery = `UPDATE individuals SET last_met_at = now() WHERE id = $1 AND m_id = $2 AND deleted_at IS NULL`
 
 	result, err := secondarydb.DB.ExecContext(c, metQuery, id, claims.MId)
+	if err != nil {
+		return nil, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+
+	if rowsAffected == 0 {
+		return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
+	}
+
+	return getIndividualByID(c, id, claims.MId)
+}
+
+// EmailVerified stamps email_status=true on an individual once they've confirmed
+// their email address via the link sent by communication-svc.
+func EmailVerified(c *gofr.Context) (any, error) {
+	id := c.PathParam("id")
+
+	claims, ok := middleware.ClaimsFromContext(c)
+	if !ok {
+		return nil, ErrUnauthorized{}
+	}
+
+	const emailVerifiedQuery = `UPDATE individuals SET email_status = true, updated_at = now() WHERE id = $1 AND m_id = $2 AND deleted_at IS NULL`
+
+	result, err := secondarydb.DB.ExecContext(c, emailVerifiedQuery, id, claims.MId)
 	if err != nil {
 		return nil, err
 	}
