@@ -8,7 +8,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-const tokenTTL = time.Hour
+const tokenTTL = 24 * time.Hour
 
 var ErrInvalidToken = errors.New("invalid token")
 
