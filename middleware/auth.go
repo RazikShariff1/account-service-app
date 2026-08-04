@@ -49,11 +49,35 @@ func writeAuthError(w http.ResponseWriter, message string) {
 	w.Write([]byte(`{"error":{"message":"` + message + `"}}`))
 }
 
+// attachClaimsIfPresent parses the Authorization header, when present, and
+// stashes the resulting claims in the request context. Used on public
+// resources so authenticated callers get results scoped to their claims
+// (e.g. m.GetAll's h_id), while unauthenticated callers still get through
+// with no error even if the token is missing, malformed, or expired.
+func attachClaimsIfPresent(r *http.Request) *http.Request {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || token == "" {
+		return r
+	}
+
+	claims, err := jwt.Parse(token)
+	if err != nil {
+		return r
+	}
+
+	return r.WithContext(context.WithValue(r.Context(), ClaimsContextKey, claims))
+}
+
 func Auth() gofrHTTP.Middleware {
 	return func(inner http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if publicPaths[r.URL.Path] || isPublicResource(r) {
+			if publicPaths[r.URL.Path] {
 				inner.ServeHTTP(w, r)
+				return
+			}
+
+			if isPublicResource(r) {
+				inner.ServeHTTP(w, attachClaimsIfPresent(r))
 				return
 			}
 

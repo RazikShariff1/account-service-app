@@ -59,17 +59,18 @@ func GetByIDs(db multiQuerier, ids []int) ([]Account, error) {
 }
 
 type Account struct {
-	Id           int    `json:"id" sql:"auto_increment"`
-	Email        string `json:"email" sql:"not_null"`
-	Password     string `json:"password,omitempty"`
-	PasswordHash string `json:"-" sql:"not_null"`
-	Name         string `json:"name"`
-	PhoneNumber  string `json:"phone_number"`
-	Status       string `json:"status"`
-	HId          int    `json:"h_id"`
-	MId          int    `json:"m_id"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	Id             int     `json:"id" sql:"auto_increment"`
+	Email          string  `json:"email" sql:"not_null"`
+	Password       string  `json:"password,omitempty"`
+	PasswordHash   string  `json:"-" sql:"not_null"`
+	Name           string  `json:"name"`
+	PhoneNumber    string  `json:"phone_number"`
+	Status         string  `json:"status"`
+	HId            int     `json:"h_id"`
+	MId            int     `json:"m_id"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
+	LastLoggedInAt *string `json:"last_logged_in_at,omitempty"`
 }
 
 func RegisterRoutes(a *gofr.App) {
@@ -212,6 +213,15 @@ func Login(c *gofr.Context) (any, error) {
 	}
 
 	acc.HId, acc.MId = int(hID.Int32), int(mID.Int32)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	if _, err := c.SQL.ExecContext(c,
+		`UPDATE accounts SET last_logged_in_at = $1 WHERE id = $2`, now, acc.Id); err != nil {
+		return nil, err
+	}
+
+	acc.LastLoggedInAt = &now
 
 	token, err := jwt.Generate(acc.Id, acc.HId, acc.MId)
 	if err != nil {

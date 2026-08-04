@@ -150,22 +150,31 @@ func Create(c *gofr.Context) (any, error) {
 	return v, nil
 }
 
-// GetAll returns every masjid belonging to the given halqa. h_id is
-// mandatory — there's no route to list masjids across all halqas.
+// GetAll returns every masjid belonging to a halqa. Authenticated callers
+// get their own claims.HId; unauthenticated callers (e.g. a signup form
+// bootstrapping its masjid list before login) must pass h_id explicitly.
 func GetAll(c *gofr.Context) (any, error) {
-	hID := c.Param("h_id")
-	if hID == "" {
-		return nil, gofrHTTP.ErrorMissingParam{Params: []string{"h_id"}}
-	}
+	var hIDInt int
 
-	v, err := strconv.Atoi(hID)
-	if err != nil {
-		return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"h_id"}}
+	if claims, ok := middleware.ClaimsFromContext(c); ok {
+		hIDInt = claims.HId
+	} else {
+		hID := c.Param("h_id")
+		if hID == "" {
+			return nil, gofrHTTP.ErrorMissingParam{Params: []string{"h_id"}}
+		}
+
+		v, err := strconv.Atoi(hID)
+		if err != nil {
+			return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"h_id"}}
+		}
+
+		hIDInt = v
 	}
 
 	query := `SELECT ` + selectColumns + ` FROM m WHERE h_id = $1`
 
-	rows, err := c.SQL.QueryContext(c, query, v)
+	rows, err := c.SQL.QueryContext(c, query, hIDInt)
 	if err != nil {
 		return nil, err
 	}
