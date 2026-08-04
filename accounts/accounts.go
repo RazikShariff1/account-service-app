@@ -178,7 +178,8 @@ type loginRequest struct {
 }
 
 type loginResponse struct {
-	Token string `json:"token"`
+	Token          string  `json:"token"`
+	AccountDetails Account `json:"account_details"`
 }
 
 func Login(c *gofr.Context) (any, error) {
@@ -188,15 +189,16 @@ func Login(c *gofr.Context) (any, error) {
 	}
 
 	var (
-		id           int
-		name         string
+		acc          Account
 		passwordHash string
 		hID, mID     sql.NullInt32
 	)
 
 	err := c.SQL.QueryRowContext(c,
-		`SELECT id, name, password_hash, h_id, m_id FROM accounts WHERE email = $1`, req.Email).
-		Scan(&id, &name, &passwordHash, &hID, &mID)
+		`SELECT id, email, name, phone_number, status, password_hash, h_id, m_id, created_at, updated_at
+		FROM accounts WHERE email = $1`, req.Email).
+		Scan(&acc.Id, &acc.Email, &acc.Name, &acc.PhoneNumber, &acc.Status, &passwordHash,
+			&hID, &mID, &acc.CreatedAt, &acc.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrInvalidCredentials{}
@@ -209,12 +211,14 @@ func Login(c *gofr.Context) (any, error) {
 		return nil, ErrInvalidCredentials{}
 	}
 
-	token, err := jwt.Generate(id, int(hID.Int32), int(mID.Int32))
+	acc.HId, acc.MId = int(hID.Int32), int(mID.Int32)
+
+	token, err := jwt.Generate(acc.Id, acc.HId, acc.MId)
 	if err != nil {
 		return nil, err
 	}
 
-	return loginResponse{Token: token}, nil
+	return loginResponse{Token: token, AccountDetails: acc}, nil
 }
 
 // hashAndInsertAccount hashes acc.Password and inserts the account row,
