@@ -52,6 +52,13 @@ type Pagination struct {
 	Page   int `json:"page"`
 	Limit  int `json:"limit"`
 	Offset int `json:"offset"`
+	Total  int `json:"total"`
+}
+
+// IndividualListResponse is the payload returned by GetAll.
+type IndividualListResponse struct {
+	Individuals []*IndividualResponse `json:"individuals"`
+	Pagination  Pagination            `json:"pagination"`
 }
 
 type IndividualResponse struct {
@@ -83,8 +90,10 @@ type Halqa struct {
 }
 
 type Masjid struct {
-	Id   int    `json:"id"`
-	Name string `json:"name"`
+	Id    int     `json:"id"`
+	Name  string  `json:"name"`
+	HId   *int    `json:"h_id,omitempty"`
+	HName *string `json:"h_name,omitempty"`
 }
 
 type Road struct {
@@ -104,11 +113,13 @@ type Profession struct {
 }
 
 type Filter struct {
-	H_id           int    `json:"h_id"`
-	Name           string `json:"name"`
-	Profession     string `json:"profession"`
-	ProfessionType string `json:"profession_type"`
-	Road_id        string `json:"road"`
+	H_id             int
+	R_id             int
+	Name             string
+	Profession       string
+	ProfessionType   string
+	ProfessionId     int
+	ProfessionTypeId int
 }
 
 const selectIndividualQuery = `
@@ -330,6 +341,70 @@ func validate(c *gofr.Context, req *IndividualRequest) error {
 	return validateReferenceIDs(c, req)
 }
 
+const (
+	defaultPageLimit = 20
+	maxPageLimit     = 100
+)
+
+const countIndividualQuery = `
+SELECT COUNT(*)
+FROM individuals i
+JOIN profession_types pt ON pt.id = i.profession_type_id
+JOIN professions p ON p.id = pt.profession_id
+WHERE i.deleted_at IS NULL`
+
+// buildIndividualFilterClause returns the "AND ..." clause matching filter,
+// scoped to mID, along with its positional args (starting at $1).
+func buildIndividualFilterClause(filter Filter, mID int) (string, []any) {
+	clause := " AND i.m_id = $1"
+	args := []any{mID}
+
+	if filter.H_id != 0 {
+		args = append(args, filter.H_id)
+		clause += fmt.Sprintf(" AND i.h_id = $%d", len(args))
+	}
+
+	if filter.R_id != 0 {
+		args = append(args, filter.R_id)
+		clause += fmt.Sprintf(" AND i.r_id = $%d", len(args))
+	}
+
+	if filter.Name != "" {
+		args = append(args, "%"+filter.Name+"%")
+		clause += fmt.Sprintf(" AND i.name ILIKE $%d", len(args))
+	}
+
+	if filter.Profession != "" {
+		args = append(args, "%"+filter.Profession+"%")
+		clause += fmt.Sprintf(" AND p.name ILIKE $%d", len(args))
+	}
+
+	if filter.ProfessionType != "" {
+		args = append(args, "%"+filter.ProfessionType+"%")
+		clause += fmt.Sprintf(" AND pt.name ILIKE $%d", len(args))
+	}
+
+	if filter.ProfessionId != 0 {
+		args = append(args, filter.ProfessionId)
+		clause += fmt.Sprintf(" AND p.id = $%d", len(args))
+	}
+
+	if filter.ProfessionTypeId != 0 {
+		args = append(args, filter.ProfessionTypeId)
+		clause += fmt.Sprintf(" AND pt.id = $%d", len(args))
+	}
+
+	return clause, args
+}
+
+func countIndividuals(c *gofr.Context, clause string, args []any) (int, error) {
+	var total int
+
+	err := secondarydb.DB.QueryRowContext(c, countIndividualQuery+clause, args...).Scan(&total)
+
+	return total, err
+}
+
 // GetAll returns every individual that has not been soft-deleted, scoped to
 // the caller's masjid.
 func GetAll(c *gofr.Context) (any, error) {
@@ -343,42 +418,24 @@ func GetAll(c *gofr.Context) (any, error) {
 		return nil, err
 	}
 
-	query := selectIndividualQuery + " AND i.m_id = $1"
-	args := []any{claims.MId}
-
-	if filter.H_id != 0 {
-		args = append(args, filter.H_id)
-		query += fmt.Sprintf(" AND i.h_id = $%d", len(args))
+	pagination, err := getPagination(c)
+	if err != nil {
+		return nil, err
 	}
 
-	if filter.Road_id != "" {
-		roadID, err := strconv.Atoi(filter.Road_id)
-		if err != nil {
-			return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"road"}}
-		}
+	clause, args := buildIndividualFilterClause(filter, claims.MId)
 
-		args = append(args, roadID)
-		query += fmt.Sprintf(" AND i.r_id = $%d", len(args))
+	total, err := countIndividuals(c, clause, args)
+	if err != nil {
+		return nil, err
 	}
 
-	if filter.Name != "" {
-		args = append(args, "%"+filter.Name+"%")
-		query += fmt.Sprintf(" AND i.name ILIKE $%d", len(args))
-	}
+	pagination.Total = total
 
-	if filter.Profession != "" {
-		args = append(args, "%"+filter.Profession+"%")
-		query += fmt.Sprintf(" AND p.name ILIKE $%d", len(args))
-	}
+	query := selectIndividualQuery + clause +
+		fmt.Sprintf(" ORDER BY i.id LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
 
-	if filter.ProfessionType != "" {
-		args = append(args, "%"+filter.ProfessionType+"%")
-		query += fmt.Sprintf(" AND pt.name ILIKE $%d", len(args))
-	}
-
-	query += " ORDER BY i.id"
-
-	rows, err := secondarydb.DB.QueryContext(c, query, args...)
+	rows, err := secondarydb.DB.QueryContext(c, query, append(args, pagination.Limit, pagination.Offset)...)
 	if err != nil {
 		return nil, err
 	}
@@ -406,11 +463,39 @@ func GetAll(c *gofr.Context) (any, error) {
 	// PgBouncer pooler.
 	rows.Close()
 
-	if err := enrichIndividuals(c, individuals); err != nil {
+	includeHData := c.Param("hdata") == "true"
+
+	if err := enrichIndividuals(c, individuals, includeHData); err != nil {
 		return nil, err
 	}
 
-	return individuals, nil
+	return IndividualListResponse{Individuals: individuals, Pagination: pagination}, nil
+}
+
+func getPagination(c *gofr.Context) (Pagination, error) {
+	page := 1
+
+	if p := c.Param("page"); p != "" {
+		v, err := strconv.Atoi(p)
+		if err != nil || v < 1 {
+			return Pagination{}, gofrHTTP.ErrorInvalidParam{Params: []string{"page"}}
+		}
+
+		page = v
+	}
+
+	limit := defaultPageLimit
+
+	if l := c.Param("limit"); l != "" {
+		v, err := strconv.Atoi(l)
+		if err != nil || v < 1 || v > maxPageLimit {
+			return Pagination{}, gofrHTTP.ErrorInvalidParam{Params: []string{"limit"}}
+		}
+
+		limit = v
+	}
+
+	return Pagination{Page: page, Limit: limit, Offset: (page - 1) * limit}, nil
 }
 
 func getFilters(c *gofr.Context) (Filter, error) {
@@ -425,10 +510,36 @@ func getFilters(c *gofr.Context) (Filter, error) {
 		filter.H_id = v
 	}
 
+	if rID := c.Param("r_id"); rID != "" {
+		v, err := strconv.Atoi(rID)
+		if err != nil {
+			return Filter{}, gofrHTTP.ErrorInvalidParam{Params: []string{"r_id"}}
+		}
+
+		filter.R_id = v
+	}
+
+	if ptID := c.Param("professiontypeid"); ptID != "" {
+		v, err := strconv.Atoi(ptID)
+		if err != nil {
+			return Filter{}, gofrHTTP.ErrorInvalidParam{Params: []string{"professiontypeid"}}
+		}
+
+		filter.ProfessionTypeId = v
+	}
+
+	if pID := c.Param("professionid"); pID != "" {
+		v, err := strconv.Atoi(pID)
+		if err != nil {
+			return Filter{}, gofrHTTP.ErrorInvalidParam{Params: []string{"professionid"}}
+		}
+
+		filter.ProfessionId = v
+	}
+
 	filter.Name = c.Param("name")
 	filter.Profession = c.Param("profession")
 	filter.ProfessionType = c.Param("profession_type")
-	filter.Road_id = c.Param("road")
 
 	return filter, nil
 }

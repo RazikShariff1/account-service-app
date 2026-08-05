@@ -23,19 +23,27 @@ var publicPaths = map[string]bool{
 	"/.well-known/alive":  true,
 }
 
-// publicResourcePrefixes bypass JWT validation for GET and POST requests, so
-// reference data (halqas, masjids) can be listed and created before a caller
-// has a token — e.g. to populate and bootstrap a signup form — while
-// update/delete on the same resources still require auth.
-var publicResourcePrefixes = []string{"/m", "/h"}
+// publicResourcePrefixes bypass JWT validation for the listed methods on each
+// prefix, so reference data can be listed before a caller has a token — e.g.
+// to populate and bootstrap a signup form — while writes and update/delete on
+// the same resources still require auth. Masjids (/m) can only be listed
+// anonymously; halqas (/h) can also be created anonymously since a halqa must
+// exist before a signup flow has anything to attach a masjid to.
+var publicResourcePrefixes = []struct {
+	prefix        string
+	publicMethods map[string]bool
+}{
+	{prefix: "/m", publicMethods: map[string]bool{http.MethodGet: true}},
+	{prefix: "/h", publicMethods: map[string]bool{http.MethodGet: true, http.MethodPost: true}},
+}
 
 func isPublicResource(r *http.Request) bool {
-	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		return false
-	}
+	for _, res := range publicResourcePrefixes {
+		if !res.publicMethods[r.Method] {
+			continue
+		}
 
-	for _, prefix := range publicResourcePrefixes {
-		if r.URL.Path == prefix || strings.HasPrefix(r.URL.Path, prefix+"/") {
+		if r.URL.Path == res.prefix || strings.HasPrefix(r.URL.Path, res.prefix+"/") {
 			return true
 		}
 	}

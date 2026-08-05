@@ -135,8 +135,11 @@ func uniqueInts(ids []int) []int {
 // enrichIndividuals resolves references for a whole list in a handful of
 // batched queries instead of one enrichIndividual call per row: GetAll can
 // return dozens of rows, and per-row enrichment (4+ round trips each)
-// multiplies latency to the primary db by the row count.
-func enrichIndividuals(c *gofr.Context, list []*IndividualResponse) error {
+// multiplies latency to the primary db by the row count. When includeHData
+// is set, each Masjid is additionally populated with the halqa it belongs
+// to (masjid.h_id/h_name), for callers that need that context without a
+// second request.
+func enrichIndividuals(c *gofr.Context, list []*IndividualResponse, includeHData bool) error {
 	if len(list) == 0 {
 		return nil
 	}
@@ -167,9 +170,42 @@ func enrichIndividuals(c *gofr.Context, list []*IndividualResponse) error {
 			return err
 		}
 
+		var masjidHalqaNameByID map[int]string
+
+		if includeHData {
+			var masjidHIDs []int
+
+			for _, v := range ms {
+				if v.HId != 0 {
+					masjidHIDs = append(masjidHIDs, v.HId)
+				}
+			}
+
+			masjidHs, err := h.GetByIDs(tx, uniqueInts(masjidHIDs))
+			if err != nil {
+				return err
+			}
+
+			masjidHalqaNameByID = make(map[int]string, len(masjidHs))
+			for _, v := range masjidHs {
+				masjidHalqaNameByID[v.Id] = v.Name
+			}
+		}
+
 		masjidByID := make(map[int]Masjid, len(ms))
 		for _, v := range ms {
-			masjidByID[v.Id] = Masjid{Id: v.Id, Name: v.Name}
+			masjid := Masjid{Id: v.Id, Name: v.Name}
+
+			if includeHData && v.HId != 0 {
+				hID := v.HId
+				masjid.HId = &hID
+
+				if name, ok := masjidHalqaNameByID[v.HId]; ok {
+					masjid.HName = &name
+				}
+			}
+
+			masjidByID[v.Id] = masjid
 		}
 
 		rs, err := road.GetByIDs(tx, uniqueInts(rIDs))
