@@ -14,6 +14,7 @@ RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 COPY --from=build /out/app ./app
+COPY static ./static
 
 # All config (DB_HOST, DB_PASSWORD, HTTP_PORT, etc.) comes from Render's env vars at runtime,
 # not a baked-in configs/.env — godotenv only fills in vars that aren't already set.
