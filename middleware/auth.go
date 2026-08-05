@@ -35,6 +35,7 @@ var publicResourcePrefixes = []struct {
 }{
 	{prefix: "/m", publicMethods: map[string]bool{http.MethodGet: true}},
 	{prefix: "/h", publicMethods: map[string]bool{http.MethodGet: true, http.MethodPost: true}},
+	{prefix: "/static", publicMethods: map[string]bool{http.MethodGet: true}},
 }
 
 func isPublicResource(r *http.Request) bool {
