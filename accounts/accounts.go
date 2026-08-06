@@ -35,7 +35,7 @@ type multiQuerier interface {
 // full details, not just its id. Password/PasswordHash are never populated.
 func GetByIDs(db multiQuerier, ids []int) ([]Account, error) {
 	rows, err := db.Query(
-		`SELECT id, email, name, phone_number, status, h_id, m_id, created_at, updated_at
+		`SELECT id, email, name, phone_number, status, h_id, m_id, h_admin, m_admin, created_at, updated_at
 		FROM accounts WHERE id = ANY($1)`, pq.Array(ids))
 	if err != nil {
 		return nil, err
@@ -48,7 +48,7 @@ func GetByIDs(db multiQuerier, ids []int) ([]Account, error) {
 		var acc Account
 
 		if err := rows.Scan(&acc.Id, &acc.Email, &acc.Name, &acc.PhoneNumber,
-			&acc.Status, &acc.HId, &acc.MId, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
+			&acc.Status, &acc.HId, &acc.MId, &acc.HAdmin, &acc.MAdmin, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
 			return nil, err
 		}
 
@@ -68,6 +68,8 @@ type Account struct {
 	Status         string  `json:"status"`
 	HId            int     `json:"h_id"`
 	MId            int     `json:"m_id"`
+	HAdmin         bool    `json:"h_admin"`
+	MAdmin         bool    `json:"m_admin"`
 	CreatedAt      string  `json:"created_at"`
 	UpdatedAt      string  `json:"updated_at"`
 	LastLoggedInAt *string `json:"last_logged_in_at,omitempty"`
@@ -153,6 +155,43 @@ func validateReferenceIDs(c *gofr.Context, acc *Account) error {
 	return nil
 }
 
+// validateAdminUniqueness rejects h_admin/m_admin being set on a new account
+// when the target h/m already has an admin, since each h and m may have at
+// most one admin account.
+func validateAdminUniqueness(c *gofr.Context, acc *Account) error {
+	var invalid []string
+
+	if acc.HAdmin {
+		var exists bool
+		if err := c.SQL.QueryRowContext(c,
+			`SELECT EXISTS(SELECT 1 FROM accounts WHERE h_id = $1 AND h_admin = true)`, acc.HId).Scan(&exists); err != nil {
+			return err
+		}
+
+		if exists {
+			invalid = append(invalid, "h_admin")
+		}
+	}
+
+	if acc.MAdmin {
+		var exists bool
+		if err := c.SQL.QueryRowContext(c,
+			`SELECT EXISTS(SELECT 1 FROM accounts WHERE m_id = $1 AND m_admin = true)`, acc.MId).Scan(&exists); err != nil {
+			return err
+		}
+
+		if exists {
+			invalid = append(invalid, "m_admin")
+		}
+	}
+
+	if len(invalid) > 0 {
+		return gofrHTTP.ErrorInvalidParam{Params: invalid}
+	}
+
+	return nil
+}
+
 type ErrInvalidCredentials struct{}
 
 func (ErrInvalidCredentials) Error() string {
@@ -196,10 +235,10 @@ func Login(c *gofr.Context) (any, error) {
 	)
 
 	err := c.SQL.QueryRowContext(c,
-		`SELECT id, email, name, phone_number, status, password_hash, h_id, m_id, created_at, updated_at
+		`SELECT id, email, name, phone_number, status, password_hash, h_id, m_id, h_admin, m_admin, created_at, updated_at
 		FROM accounts WHERE email = $1`, req.Email).
 		Scan(&acc.Id, &acc.Email, &acc.Name, &acc.PhoneNumber, &acc.Status, &passwordHash,
-			&hID, &mID, &acc.CreatedAt, &acc.UpdatedAt)
+			&hID, &mID, &acc.HAdmin, &acc.MAdmin, &acc.CreatedAt, &acc.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrInvalidCredentials{}
@@ -247,9 +286,10 @@ func hashAndInsertAccount(c *gofr.Context, acc *Account) error {
 	acc.UpdatedAt = now
 
 	err = c.SQL.QueryRowContext(c,
-		`INSERT INTO accounts (email, password_hash, name, phone_number, status, h_id, m_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-		acc.Email, acc.PasswordHash, acc.Name, acc.PhoneNumber, acc.Status, acc.HId, acc.MId, acc.CreatedAt, acc.UpdatedAt).
+		`INSERT INTO accounts (email, password_hash, name, phone_number, status, h_id, m_id, h_admin, m_admin, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+		acc.Email, acc.PasswordHash, acc.Name, acc.PhoneNumber, acc.Status, acc.HId, acc.MId, acc.HAdmin, acc.MAdmin,
+		acc.CreatedAt, acc.UpdatedAt).
 		Scan(&acc.Id)
 	if err != nil {
 		return err
@@ -284,6 +324,10 @@ func Signup(c *gofr.Context) (any, error) {
 	}
 
 	if err := validateReferenceIDs(c, &acc); err != nil {
+		return nil, err
+	}
+
+	if err := validateAdminUniqueness(c, &acc); err != nil {
 		return nil, err
 	}
 
@@ -325,6 +369,10 @@ func Create(c *gofr.Context) (any, error) {
 		return nil, err
 	}
 
+	if err := validateAdminUniqueness(c, &acc); err != nil {
+		return nil, err
+	}
+
 	if err := hashAndInsertAccount(c, &acc); err != nil {
 		if isUniqueViolation(err) {
 			return nil, gofrHTTP.ErrorEntityAlreadyExist{}
@@ -336,15 +384,46 @@ func Create(c *gofr.Context) (any, error) {
 	return acc, nil
 }
 
+// GetAll lists accounts under the caller's own m_id, or, when hId/mId is
+// given via the h_id/m_id query param, every account under that hierarchy
+// node instead — used by other services (e.g. communication-svc) to resolve
+// a hierarchy/merchant broadcast target down to the account ids it covers.
 func GetAll(c *gofr.Context) (any, error) {
 	claims, ok := middleware.ClaimsFromContext(c)
 	if !ok {
 		return nil, ErrUnauthorized{}
 	}
 
-	rows, err := c.SQL.QueryContext(c,
-		`SELECT id, email, name, phone_number, status, h_id, m_id, created_at, updated_at
-		FROM accounts WHERE m_id = $1`, claims.MId)
+	var (
+		rows *sql.Rows
+		err  error
+	)
+
+	switch {
+	case c.Param("h_id") != "":
+		hID, convErr := strconv.Atoi(c.Param("h_id"))
+		if convErr != nil {
+			return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"h_id"}}
+		}
+
+		rows, err = c.SQL.QueryContext(c,
+			`SELECT id, email, name, phone_number, status, h_id, m_id, h_admin, m_admin, created_at, updated_at
+			FROM accounts WHERE h_id = $1`, hID)
+	case c.Param("m_id") != "":
+		mID, convErr := strconv.Atoi(c.Param("m_id"))
+		if convErr != nil {
+			return nil, gofrHTTP.ErrorInvalidParam{Params: []string{"m_id"}}
+		}
+
+		rows, err = c.SQL.QueryContext(c,
+			`SELECT id, email, name, phone_number, status, h_id, m_id, h_admin, m_admin, created_at, updated_at
+			FROM accounts WHERE m_id = $1`, mID)
+	default:
+		rows, err = c.SQL.QueryContext(c,
+			`SELECT id, email, name, phone_number, status, h_id, m_id, h_admin, m_admin, created_at, updated_at
+			FROM accounts WHERE m_id = $1`, claims.MId)
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +435,7 @@ func GetAll(c *gofr.Context) (any, error) {
 		var acc Account
 
 		if err := rows.Scan(&acc.Id, &acc.Email, &acc.Name, &acc.PhoneNumber,
-			&acc.Status, &acc.HId, &acc.MId, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
+			&acc.Status, &acc.HId, &acc.MId, &acc.HAdmin, &acc.MAdmin, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
 			return nil, err
 		}
 
@@ -377,9 +456,10 @@ func Get(c *gofr.Context) (any, error) {
 	var acc Account
 
 	err := c.SQL.QueryRowContext(c,
-		`SELECT id, email, name, phone_number, status, h_id, m_id, created_at, updated_at
+		`SELECT id, email, name, phone_number, status, h_id, m_id, h_admin, m_admin, created_at, updated_at
 		FROM accounts WHERE id = $1 AND m_id = $2`, id, claims.MId).
-		Scan(&acc.Id, &acc.Email, &acc.Name, &acc.PhoneNumber, &acc.Status, &acc.HId, &acc.MId, &acc.CreatedAt, &acc.UpdatedAt)
+		Scan(&acc.Id, &acc.Email, &acc.Name, &acc.PhoneNumber, &acc.Status, &acc.HId, &acc.MId, &acc.HAdmin, &acc.MAdmin,
+			&acc.CreatedAt, &acc.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, gofrHTTP.ErrorEntityNotFound{Name: "id", Value: id}
@@ -429,13 +509,15 @@ func Update(c *gofr.Context) (any, error) {
 
 		result, err = c.SQL.ExecContext(c,
 			`UPDATE accounts SET email = $1, password_hash = $2, name = $3, phone_number = $4, status = $5,
-			h_id = $6, m_id = $7, updated_at = $8 WHERE id = $9 AND m_id = $10`,
-			acc.Email, string(hash), acc.Name, acc.PhoneNumber, acc.Status, acc.HId, acc.MId, acc.UpdatedAt, id, claims.MId)
+			h_id = $6, m_id = $7, h_admin = $8, m_admin = $9, updated_at = $10 WHERE id = $11 AND m_id = $12`,
+			acc.Email, string(hash), acc.Name, acc.PhoneNumber, acc.Status, acc.HId, acc.MId, acc.HAdmin, acc.MAdmin,
+			acc.UpdatedAt, id, claims.MId)
 	} else {
 		result, err = c.SQL.ExecContext(c,
 			`UPDATE accounts SET email = $1, name = $2, phone_number = $3, status = $4,
-			h_id = $5, m_id = $6, updated_at = $7 WHERE id = $8 AND m_id = $9`,
-			acc.Email, acc.Name, acc.PhoneNumber, acc.Status, acc.HId, acc.MId, acc.UpdatedAt, id, claims.MId)
+			h_id = $5, m_id = $6, h_admin = $7, m_admin = $8, updated_at = $9 WHERE id = $10 AND m_id = $11`,
+			acc.Email, acc.Name, acc.PhoneNumber, acc.Status, acc.HId, acc.MId, acc.HAdmin, acc.MAdmin, acc.UpdatedAt,
+			id, claims.MId)
 	}
 
 	if err != nil {

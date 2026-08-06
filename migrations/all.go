@@ -19,5 +19,6 @@ func All() map[int64]migration.Migrate {
 		1722268811: addUniqueNameConstraints(),
 		1785908821: addAccountsVerificationStatus(),
 		1785908822: addAccountsLastLoggedInAt(),
+		1785908823: addAccountsAdminFlags(),
 	}
 }
