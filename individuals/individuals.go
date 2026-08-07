@@ -14,8 +14,10 @@ import (
 	gofrSQL "gofr.dev/pkg/gofr/datasource/sql"
 	gofrHTTP "gofr.dev/pkg/gofr/http"
 
+	"main/accounts"
 	"main/activity"
 	"main/middleware"
+	"main/notify"
 	"main/secondarydb"
 )
 
@@ -318,7 +320,25 @@ RETURNING id`
 		return nil, err
 	}
 
+	notify.ToMasjid(c, req.MId, "new_individual_added", map[string]any{
+		"Type":       resp.Profession.Name,
+		"Profession": resp.Profession.ProfessionType.Name,
+		"Author":     authorName(c, claims.AId),
+	})
+
 	return resp, nil
+}
+
+// authorName resolves accountID to its account name, for use as a push
+// template's {{.Author}} placeholder. Returns "" if the account can't be
+// found, so a lookup failure never blocks the push it's feeding into.
+func authorName(c *gofr.Context, accountID int) string {
+	accs, err := accounts.GetByIDs(c.SQL, []int{accountID})
+	if err != nil || len(accs) == 0 {
+		return ""
+	}
+
+	return accs[0].Name
 }
 
 func validate(c *gofr.Context, req *IndividualRequest) error {

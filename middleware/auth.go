@@ -15,6 +15,8 @@ type contextKey string
 
 const ClaimsContextKey contextKey = "claims"
 
+const AuthHeaderContextKey contextKey = "authHeader"
+
 // publicPaths bypass JWT validation entirely, regardless of method.
 var publicPaths = map[string]bool{
 	"/login":              true,
@@ -80,6 +82,8 @@ func attachClaimsIfPresent(r *http.Request) *http.Request {
 func Auth() gofrHTTP.Middleware {
 	return func(inner http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r = r.WithContext(context.WithValue(r.Context(), AuthHeaderContextKey, r.Header.Get("Authorization")))
+
 			if publicPaths[r.URL.Path] {
 				inner.ServeHTTP(w, r)
 				return
@@ -120,4 +124,12 @@ func Auth() gofrHTTP.Middleware {
 func ClaimsFromContext(ctx context.Context) (*jwt.Claims, bool) {
 	claims, ok := ctx.Value(ClaimsContextKey).(*jwt.Claims)
 	return claims, ok
+}
+
+// AuthHeaderFromContext returns the caller's raw Authorization header value
+// (e.g. "Bearer <token>"), stashed by Auth, for handlers that need to forward
+// it to another service (e.g. communication-svc for push notifications).
+func AuthHeaderFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(AuthHeaderContextKey).(string)
+	return v
 }

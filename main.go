@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+
 	"main/accounts"
 	"main/activity"
 	"main/h"
@@ -20,6 +22,8 @@ import (
 
 func main() {
 	app := gofr.New()
+
+	app.AddHTTPService("communication-svc", os.Getenv("COMMUNICATION_SVC_BASE_URL"))
 
 	if err := secondarydb.Init(); err != nil {
 		app.Logger().Fatalf("failed to connect to secondary db: %v", err)

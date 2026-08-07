@@ -20,6 +20,7 @@ import (
 	"main/jwt"
 	"main/m"
 	"main/middleware"
+	"main/notify"
 )
 
 const minPasswordLength = 8
@@ -381,7 +382,24 @@ func Create(c *gofr.Context) (any, error) {
 		return nil, err
 	}
 
+	notify.ToMasjid(c, acc.MId, "new_account_added", map[string]any{
+		"Name":   acc.Name,
+		"Author": authorName(c, claims.AId),
+	})
+
 	return acc, nil
+}
+
+// authorName resolves accountID to its account name, for use as a push
+// template's {{.Author}} placeholder. Returns "" if the account can't be
+// found, so a lookup failure never blocks the push it's feeding into.
+func authorName(c *gofr.Context, accountID int) string {
+	accs, err := GetByIDs(c.SQL, []int{accountID})
+	if err != nil || len(accs) == 0 {
+		return ""
+	}
+
+	return accs[0].Name
 }
 
 // GetAll lists accounts under the caller's own m_id, or, when hId/mId is
